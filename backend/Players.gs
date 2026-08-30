@@ -13,9 +13,24 @@
  *                          the matching PENDING row in Payments.
  *                          Returns the serial number.
  *
- * PHASE 2 — admin review
- *   player.list            ADMIN. Paged and filterable by payment_status,
- *                          auction_status, team and free-text search_blob.
+ * PHASE 2 — admin review (CONTRACTS-PHASE2.md §1, §2, §3)
+ *   player.list            ADMIN, or ORGANISER for their own tournament. Paged,
+ *                          filterable by payment_status, auction_status and the
+ *                          withdrawn flag, and searchable across serial_no,
+ *                          name, mobile and upi_ref. One Repo.readAll per tab.
+ *   player.setWithdrawn    ADMIN. Marks a player as pulled out. The serial number
+ *                          stays reserved for ever (DESIGN.md §9, §15 case 16).
+ *
+ *   Players.isAuctionEligible / Players.eligibleCount / Players.counts
+ *                          The single definition of the verified pool
+ *                          (CONTRACTS-PHASE2.md §2) and the tournament-wide
+ *                          counts object (§3). Phase 4's auction and Payments.gs
+ *                          both call these rather than re-deriving the rule.
+ *
+ * ONE FIELD, ONE WRITER: payment_status on the Players row is a MIRROR of the
+ * Payments row and is maintained by Payments.gs alone. This file reads it and
+ * never writes it — two writers for one field is how the auction pool ends up
+ * disagreeing with the payment queue.
  */
 
 /**
@@ -91,6 +106,28 @@ const PLAYER_MSG = Object.freeze({
   NO_TOURNAMENT: 'That tournament was not found. Please check the registration link.',
   TOO_MANY_CHECKS: 'Too many checks for this number. Please wait a few minutes and try again.'
 });
+
+/** Rows per page when the caller does not ask (CONTRACTS-PHASE2 §1). @const {number} */
+const PLAYER_LIST_DEFAULT_PAGE_SIZE = 50;
+
+/**
+ * Hard ceiling on pageSize (CONTRACTS-PHASE2 §1). A caller asking for 5000 rows
+ * is asking for a payload the browser has to render and Apps Script has to
+ * serialise; 200 is the largest page that still keeps the screen usable.
+ * @const {number}
+ */
+const PLAYER_LIST_MAX_PAGE_SIZE = 200;
+
+/**
+ * The four sort keys CONTRACTS-PHASE2 §1 allows. Anything else is rejected
+ * rather than silently falling back, because a typo that quietly reorders a
+ * paged list makes rows appear twice or not at all.
+ * @const {!Array<string>}
+ */
+const PLAYER_LIST_SORTS = Object.freeze(['serial_no', 'name', 'registered_at', 'payment_status']);
+
+/** Longest withdrawal reason kept on the audit row, in characters. @const {number} */
+const PLAYER_WITHDRAW_REASON_MAX = 200;
 
 const Players = {
 
@@ -585,15 +622,595 @@ const Players = {
     const raw = tournament.reg_fee;
     if (Util.isBlank(raw) || Util.toInt(raw, -1) === 0) return 0;
     return Util.toMoney(raw);
+  },
+
+  // ---------------------------------------------------------------------------
+  // The verified pool — CONTRACTS-PHASE2 §2
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Is this player in the auction pool?
+   *
+   * The predicate is exactly CONTRACTS-PHASE2 §2:
+   *     payment_status === 'VERIFIED' && is_withdrawn !== true
+   *
+   * ===========================================================================
+   * WARNING — THIS IS THE ONLY COPY OF THIS RULE. DO NOT WRITE A SECOND ONE.
+   *
+   * Phase 4's auction, the projector feed and every report must call this
+   * function rather than re-testing the two columns themselves. A second copy
+   * that drifts by one condition is how a rejected or withdrawn player ends up
+   * on the projector in front of a hall of 200 people, and the two copies will
+   * drift, because the payment rules change and the auction code does not get
+   * re-read when they do.
+   * ===========================================================================
+   *
+   * The withdrawn side goes through Players._isWithdrawn rather than a bare
+   * `!== true`, so a row read outside Repo's boolean typing — where the sheet
+   * hands back the literal string "TRUE" — still counts as withdrawn. That is
+   * strictly stricter than the contract, never looser: it can only keep someone
+   * out of the pool, never let them in.
+   *
+   * @param {!Object} playerRow a Players row
+   * @return {boolean} true when the player may be auctioned
+   */
+  isAuctionEligible(playerRow) {
+    if (!playerRow || typeof playerRow !== 'object') return false;
+    return Players._str(playerRow.payment_status).toUpperCase() === ENUM.PAYMENT_STATUS.VERIFIED &&
+      !Players._isWithdrawn(playerRow);
+  },
+
+  /**
+   * How many players in this tournament are auction-eligible.
+   *
+   * Derived from Players.counts so there is one pass over the sheet and one
+   * definition of the predicate.
+   *
+   * @param {string} tournamentId the tournament
+   * @return {number} the size of the verified pool
+   */
+  eligibleCount(tournamentId) {
+    return Players.counts(tournamentId).eligible;
+  },
+
+  /**
+   * The CONTRACTS-PHASE2 §3 counts object for a whole tournament.
+   *
+   * ALWAYS TOURNAMENT-WIDE, NEVER PAGE-SCOPED. The admin needs "42 still
+   * pending" while looking at page 1 of 8, so these numbers are deliberately
+   * unaffected by the filter, the search and the page the caller asked for.
+   *
+   * `preloadedRows` lets a caller that has just done its own
+   * Repo.readAll(Players) hand the rows straight over instead of paying for a
+   * second full read. Payments.gs uses this on every verify and reject, which
+   * at 400 players is one saved sheet read per click. Rows for other
+   * tournaments in the array are ignored, so passing an unfiltered readAll is
+   * safe (DESIGN.md §39 — every row carries its tournament_id).
+   *
+   * pending + verified + rejected can be less than `all` if a row somehow
+   * carries a blank payment_status; that is reported honestly rather than
+   * folded into one of the three buckets.
+   *
+   * @param {string} tournamentId the tournament
+   * @param {!Array<!Object>=} preloadedRows Players rows already in memory
+   * @return {{all: number, pending: number, verified: number, rejected: number,
+   *           withdrawn: number, eligible: number}} the counts
+   */
+  counts(tournamentId, preloadedRows) {
+    const id = Players._str(tournamentId);
+    const rows = Array.isArray(preloadedRows) ? preloadedRows : Repo.readAll(SHEETS.PLAYERS);
+    const out = { all: 0, pending: 0, verified: 0, rejected: 0, withdrawn: 0, eligible: 0 };
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || Players._str(row.tournament_id) !== id) continue;
+
+      // Every registration counts, withdrawn ones included: `all` is a record of
+      // what arrived, and `withdrawn` is the separate number that says how many
+      // of them pulled out.
+      out.all++;
+
+      const status = Players._str(row.payment_status).toUpperCase();
+      if (status === ENUM.PAYMENT_STATUS.PENDING) out.pending++;
+      else if (status === ENUM.PAYMENT_STATUS.VERIFIED) out.verified++;
+      else if (status === ENUM.PAYMENT_STATUS.REJECTED) out.rejected++;
+
+      if (Players._isWithdrawn(row)) out.withdrawn++;
+      if (Players.isAuctionEligible(row)) out.eligible++;
+    }
+    return out;
+  },
+
+  // ---------------------------------------------------------------------------
+  // player.list — CONTRACTS-PHASE2 §1
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The admin player list: filtered, sorted, paged, with tournament-wide counts.
+   *
+   * ============================ PERFORMANCE CONTRACT =========================
+   * EXACTLY ONE Repo.readAll(Players) AND ONE Repo.readAll(Payments) PER CALL.
+   * Everything after that — the tournament filter, the four field filters, the
+   * search, the sort and the page slice — happens in memory.
+   *
+   * Never reach for Repo.filterBy, Repo.findBy or Repo.count inside a loop here.
+   * Each of those re-reads the ENTIRE sheet through getValues(). One per row at
+   * 400 players is 160,000 rows of reads to render 50, and the screen becomes
+   * unusable long before the 6-minute execution limit stops it (DESIGN.md §14).
+   * The Payments read exists only because upi_ref and payment_id live on the
+   * Payments row; it is one read for the whole page, not one per player.
+   * ===========================================================================
+   *
+   * @param {!Object} payload {tournamentId, filter:{paymentStatus, auctionStatus,
+   *     search, withdrawn}, page, pageSize, sort, sortDir}
+   * @param {!Object} session ADMIN, or ORGANISER scoped to this tournament
+   * @return {{rows: !Array<!Object>, page: number, pageSize: number,
+   *           total: number, totalPages: number, counts: !Object}} the page
+   * @throws {!Error} VALIDATION_FAILED, FORBIDDEN, NOT_FOUND
+   */
+  list(payload, session) {
+    const p = payload || {};
+    const tournamentId = Players._str(p.tournamentId || p.tournament_id);
+    if (!tournamentId) {
+      throw Util.AppError(ERR.VALIDATION_FAILED, 'A tournament id is required.');
+    }
+
+    // The only thing standing between one organiser and another organiser's
+    // players. Checked before anything is read (Auth.gs header, DESIGN.md §39).
+    Auth.requireTournament(session, tournamentId);
+
+    // An unknown id must say so. Returning an empty list would look identical to
+    // a tournament where nobody has registered yet, and the admin would go
+    // hunting for missing players instead of fixing a typo. The Tournaments tab
+    // holds a handful of rows, so this read is not the one that costs anything.
+    Players._requireTournamentForAdmin(tournamentId);
+
+    // --- 1. Read the request ------------------------------------------------
+    const filter = (p.filter && typeof p.filter === 'object' && !Array.isArray(p.filter)) ? p.filter : {};
+    const paymentStatus = Players._optionalEnum(filter.paymentStatus, ENUM.PAYMENT_STATUS, 'payment status');
+    const auctionStatus = Players._optionalEnum(filter.auctionStatus, ENUM.AUCTION_STATUS, 'auction status');
+    const search = Players._str(filter.search).toLowerCase();
+
+    // Omitted means "both". Only an explicitly supplied value narrows the list,
+    // so `withdrawn: false` ("hide the ones who pulled out") is a real filter and
+    // is not confused with "no filter at all".
+    const hasWithdrawn = Object.prototype.hasOwnProperty.call(filter, 'withdrawn') &&
+      filter.withdrawn !== null && filter.withdrawn !== undefined && filter.withdrawn !== '';
+    const wantWithdrawn = hasWithdrawn
+      ? Players._requireBoolean(filter.withdrawn, 'The withdrawn filter')
+      : null;
+
+    const sort = Players._str(p.sort).toLowerCase() || PLAYER_LIST_SORTS[0];
+    if (PLAYER_LIST_SORTS.indexOf(sort) === -1) {
+      throw Util.AppError(ERR.VALIDATION_FAILED,
+        '"' + Players._str(p.sort).substring(0, 30) + '" is not a sort order. Use one of: ' +
+        PLAYER_LIST_SORTS.join(', ') + '.');
+    }
+    const descending = Players._str(p.sortDir).toLowerCase() === 'desc';
+
+    const pageSize = Math.min(PLAYER_LIST_MAX_PAGE_SIZE,
+      Math.max(1, Util.toInt(p.pageSize, PLAYER_LIST_DEFAULT_PAGE_SIZE) || PLAYER_LIST_DEFAULT_PAGE_SIZE));
+    const page = Math.max(1, Util.toInt(p.page, 1) || 1);
+
+    // --- 2. The two reads ---------------------------------------------------
+    const allPlayers = Repo.readAll(SHEETS.PLAYERS);
+    const paymentByPlayer = Players._paymentIndex(tournamentId, Repo.readAll(SHEETS.PAYMENTS));
+
+    const mine = [];
+    for (let i = 0; i < allPlayers.length; i++) {
+      if (Players._str(allPlayers[i].tournament_id) === tournamentId) mine.push(allPlayers[i]);
+    }
+
+    // Computed from the whole tournament and from the rows already in hand, so
+    // the header still reads "42 pending" while the grid shows only VERIFIED.
+    const counts = Players.counts(tournamentId, mine);
+
+    // --- 3. Filter in memory ------------------------------------------------
+    const filtered = mine.filter((row) => {
+      if (paymentStatus && Players._str(row.payment_status).toUpperCase() !== paymentStatus) return false;
+      if (auctionStatus && Players._str(row.auction_status).toUpperCase() !== auctionStatus) return false;
+      if (wantWithdrawn !== null && Players._isWithdrawn(row) !== wantWithdrawn) return false;
+      if (search && !Players._matchesSearch(row, paymentByPlayer[Players._str(row.player_id)], search)) return false;
+      return true;
+    });
+
+    // --- 4. Sort, then slice ------------------------------------------------
+    filtered.sort(Players._comparator(sort, descending));
+
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / pageSize);
+    const start = (page - 1) * pageSize;
+
+    // A page past the end is not an error — the admin may be holding a bookmark
+    // from before a filter narrowed the list. slice() past the end gives [], and
+    // the correct total and totalPages come back with it so the screen can move
+    // itself to a page that exists.
+    const slice = (start >= total) ? [] : filtered.slice(start, start + pageSize);
+
+    const rows = slice.map((row) => Players._listRow(row, paymentByPlayer[Players._str(row.player_id)]));
+
+    return {
+      rows: rows,
+      page: page,
+      pageSize: pageSize,
+      total: total,
+      totalPages: totalPages,
+      counts: counts
+    };
+  },
+
+  /**
+   * Build one row of the list response.
+   *
+   * ============================ SECURITY BOUNDARY ============================
+   * Assembled FIELD BY FIELD from an explicit allow-list, never by spreading the
+   * sheet row. Two things depend on that:
+   *
+   *   1. screenshot_file_id IS NEVER IN A LIST ROW. The payment screenshot is a
+   *      proof of payment in the never-shared private/ Drive folder, and a Drive
+   *      file id is enough to build an unauthenticated link to it (DESIGN.md §16
+   *      risk 1). Screenshots are fetched one at a time, behind an admin token,
+   *      through payment.getScreenshot — so a file id has no reason whatsoever to
+   *      appear in a bulk response of 200 rows.
+   *   2. Any column a later phase appends to Players or Payments stays invisible
+   *      until somebody deliberately adds a line here. With a spread, it would
+   *      leak by default and leak silently.
+   *
+   * Do not replace this with Object.assign or a spread.
+   * ===========================================================================
+   *
+   * @param {!Object} row a Players row
+   * @param {?Object} payment the matching Payments row, or undefined
+   * @return {!Object} the CONTRACTS-PHASE2 §1 row shape
+   */
+  _listRow(row, payment) {
+    const registeredAt = Players._str(row.registered_at);
+    const pay = payment || {};
+    return {
+      serial_no: Util.toInt(row.serial_no, 0),
+      player_id: Players._str(row.player_id),
+      name: Players._str(row.name),
+      dob: Players._str(row.dob),
+      age_years: Util.toInt(row.age_years, 0),
+      role: Players._str(row.role),
+      style: Players._str(row.style),
+      mobile: Players._str(row.mobile),
+      upi_ref: Players._str(pay.upi_ref),
+      payment_status: Players._str(row.payment_status),
+      auction_status: Players._str(row.auction_status),
+      team_id: Players._str(row.team_id),
+      // null, not 0: "never sold" and "sold for nothing" are different facts.
+      sold_amount: Util.isBlank(row.sold_amount) ? null : Util.toInt(row.sold_amount, 0),
+      is_withdrawn: Players._isWithdrawn(row),
+      registered_at: registeredAt,
+      registered_at_display: Util.formatIST(registeredAt, true),
+      photo_thumb_url: Players._str(row.photo_thumb_url),
+      payment_id: Players._str(pay.payment_id)
+    };
+  },
+
+  /**
+   * Index this tournament's Payments rows by player_id.
+   *
+   * Scoped to the tournament before indexing, so a player id that somehow
+   * appeared in two tournaments could never pull the wrong tournament's UPI
+   * reference into the list (DESIGN.md §39).
+   *
+   * Phase 1 writes exactly one Payments row per player inside the same locked
+   * section as the Players row, so a second row for the same player is a data
+   * fault rather than a normal state. The first one wins and the list still
+   * renders; the duplicate shows up in the payment queue where a human can see it.
+   *
+   * @param {string} tournamentId the tournament
+   * @param {!Array<!Object>} paymentRows every Payments row, already read once
+   * @return {!Object<string,!Object>} player_id -> Payments row
+   */
+  _paymentIndex(tournamentId, paymentRows) {
+    const out = {};
+    for (let i = 0; i < paymentRows.length; i++) {
+      const row = paymentRows[i];
+      if (Players._str(row.tournament_id) !== tournamentId) continue;
+      const key = Players._str(row.player_id);
+      if (!key || Object.prototype.hasOwnProperty.call(out, key)) continue;
+      out[key] = row;
+    }
+    return out;
+  },
+
+  /**
+   * Free-text search across the four fields CONTRACTS-PHASE2 §1 names:
+   * serial_no, name, mobile and upi_ref.
+   *
+   * Substring, case-insensitive. Substring rather than exact because the admin
+   * is usually typing from a screenshot or a phone screen and has part of a
+   * number, not all of it. search_blob is deliberately NOT used: it carries
+   * name + role + style, so searching it would match every all-rounder when the
+   * admin typed "all".
+   *
+   * @param {!Object} row a Players row
+   * @param {?Object} payment the matching Payments row, or undefined
+   * @param {string} needle the search text, already lowercased and trimmed
+   * @return {boolean} true when any of the four fields contains the needle
+   */
+  _matchesSearch(row, payment, needle) {
+    const pay = payment || {};
+    const fields = [
+      Players._str(row.serial_no),
+      Players._str(row.name),
+      Players._str(row.mobile),
+      Players._str(pay.upi_ref)
+    ];
+    for (let i = 0; i < fields.length; i++) {
+      if (fields[i].toLowerCase().indexOf(needle) !== -1) return true;
+    }
+    return false;
+  },
+
+  /**
+   * Comparator for one of the four PLAYER_LIST_SORTS keys.
+   *
+   * Every comparison falls back to serial_no ascending, which is unique within a
+   * tournament. That makes the order total, so two players with the same name or
+   * the same payment status can never swap places between page 1 and page 2 and
+   * cause a row to be shown twice or skipped entirely.
+   *
+   * registered_at is a full UTC instant from Util.nowIso(), so Date.parse is the
+   * right tool for it — unlike a bare IST calendar date, which must never be
+   * parsed directly (CONTRACTS.md §6a rule 2).
+   *
+   * @param {string} sort one of PLAYER_LIST_SORTS
+   * @param {boolean} descending reverse the primary key only
+   * @return {function(!Object, !Object): number} an Array.prototype.sort comparator
+   */
+  _comparator(sort, descending) {
+    const direction = descending ? -1 : 1;
+    return function (a, b) {
+      let d = 0;
+      if (sort === 'serial_no') {
+        d = Util.toInt(a.serial_no, 0) - Util.toInt(b.serial_no, 0);
+      } else if (sort === 'registered_at') {
+        d = (Date.parse(Players._str(a.registered_at)) || 0) - (Date.parse(Players._str(b.registered_at)) || 0);
+      } else if (sort === 'name') {
+        d = Players._compareText(Players._str(a.name), Players._str(b.name));
+      } else {
+        d = Players._compareText(Players._str(a.payment_status), Players._str(b.payment_status));
+      }
+      if (d !== 0) return d * direction;
+      return Util.toInt(a.serial_no, 0) - Util.toInt(b.serial_no, 0);
+    };
+  },
+
+  /**
+   * Case-insensitive text compare returning -1, 0 or 1.
+   *
+   * Lowercased rather than sorted by code point, so "anand" does not come after
+   * "Zahir". Deliberately not localeCompare: Apps Script's implementation of it
+   * is not dependable across runtimes, and the ordering only has to be stable
+   * and roughly alphabetical, not linguistically correct for every script.
+   *
+   * @param {string} a left value
+   * @param {string} b right value
+   * @return {number} -1, 0 or 1
+   */
+  _compareText(a, b) {
+    const x = a.toLowerCase();
+    const y = b.toLowerCase();
+    if (x < y) return -1;
+    if (x > y) return 1;
+    return 0;
+  },
+
+  // ---------------------------------------------------------------------------
+  // player.setWithdrawn — CONTRACTS-PHASE2 §1, DESIGN.md §15 case 16
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Mark a player as withdrawn, or put them back.
+   *
+   * THE SERIAL NUMBER STAYS RESERVED FOR EVER. Nothing here renumbers anyone and
+   * nothing ever hands serial 27 to a second person (DESIGN.md §9, §15 case 16).
+   * The row, the photos and the payment record all stay exactly where they are;
+   * one boolean changes. A withdrawn player simply stops satisfying the §2
+   * eligibility predicate, so they drop out of the auction pool and off the
+   * projector without anything being deleted.
+   *
+   * @param {!Object} payload {playerId, withdrawn, reason}
+   * @param {!Object} session the ADMIN session
+   * @return {{player_id: string, serial_no: number, is_withdrawn: boolean}} the new state
+   * @throws {!Error} VALIDATION_FAILED, NOT_FOUND, SYSTEM_BUSY
+   */
+  setWithdrawn(payload, session) {
+    const p = payload || {};
+    const playerId = Players._str(p.playerId || p.player_id);
+    if (!playerId) {
+      throw Util.AppError(ERR.VALIDATION_FAILED, 'A player id is required.');
+    }
+
+    const withdrawn = Players._requireBoolean(p.withdrawn, 'The withdrawn flag');
+
+    // Optional, unlike payment.reject's reason, which CONTRACTS-PHASE2 §1 marks
+    // REQUIRED. A withdrawal is usually the player's own decision relayed by
+    // phone, so there is often nothing to record beyond the fact of it.
+    const reason = Players._str(p.reason);
+    if (reason.length > PLAYER_WITHDRAW_REASON_MAX) {
+      throw Util.AppError(ERR.VALIDATION_FAILED,
+        'The reason must be ' + PLAYER_WITHDRAW_REASON_MAX + ' characters or fewer. This one is ' +
+        reason.length + '.');
+    }
+
+    return Repo.withLock(function () {
+      // Re-read inside the lock. The copy any caller is looking at on screen may
+      // be seconds old, and a sale could have landed in between — which is the
+      // one thing this function must not paper over.
+      const row = Repo.findBy(SHEETS.PLAYERS, 'player_id', playerId);
+      if (!row) {
+        throw Util.AppError(ERR.NOT_FOUND,
+          'No player was found with the id "' + playerId.substring(0, 40) + '".');
+      }
+
+      const serialNo = Util.toInt(row.serial_no, 0);
+
+      // ===================================================================
+      // A SOLD PLAYER IS NOT WITHDRAWN HERE, EVER.
+      //
+      // A sale is three facts, not one: the player has a team_id, the team's
+      // purse_used went up by the sold amount, and the team's players_count went
+      // up by one. Flipping is_withdrawn here would change exactly one of the
+      // three and leave the other two standing — the team would keep paying for
+      // a player it no longer has, its purse would stay short for the rest of
+      // the auction, and its squad count would block a replacement signing.
+      // Nothing would report an error; the money would just be wrong.
+      //
+      // Unwinding a sale is the Phase 7 correction flow, which reverses all
+      // three together inside the auction lock and writes the superseding
+      // AuctionResults row. Send the admin there.
+      // ===================================================================
+      if (Players._str(row.auction_status).toUpperCase() === ENUM.AUCTION_STATUS.SOLD) {
+        throw Util.AppError(ERR.VALIDATION_FAILED,
+          'Player #' + serialNo + ' has already been sold, so this cannot be changed here. ' +
+          'Use the auction correction screen instead — it also gives the team back its money ' +
+          'and its squad place, which withdrawing the player would not.');
+      }
+
+      const was = Players._isWithdrawn(row);
+
+      // Already in the requested state: a no-op success, not an error. Two admins
+      // clicking the same button must not produce a scary message (DESIGN.md §15
+      // case 4). Nothing is written and nothing is audited, because nothing
+      // happened.
+      if (was === withdrawn) {
+        return { player_id: Players._str(row.player_id), serial_no: serialNo, is_withdrawn: withdrawn };
+      }
+
+      Repo.updateRow(SHEETS.PLAYERS, row._row, { is_withdrawn: withdrawn });
+
+      // payment_status is deliberately untouched. It mirrors the Payments row and
+      // Payments.gs is its only writer; a withdrawal says nothing about whether
+      // the money arrived, and the fee question is settled off-system.
+      Audit.log({
+        actor: session ? session.user_id : '',
+        role: session ? session.role : '',
+        action: Audit.ACTIONS.PLAYER_WITHDRAWN,
+        tournamentId: Players._str(row.tournament_id),
+        entityType: 'Player',
+        entityId: Players._str(row.player_id),
+        prev: { is_withdrawn: was },
+        next: { is_withdrawn: withdrawn, serial_no: serialNo, reason: reason },
+        ua: Players._str(p.ua)
+      });
+
+      // Push the write out before the lock is released, so the next caller's
+      // re-read actually sees it (CONTRACTS.md §5 rule 3).
+      Repo.flush();
+
+      return { player_id: Players._str(row.player_id), serial_no: serialNo, is_withdrawn: withdrawn };
+    });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Shared helpers for the Phase 2 handlers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Trim any value to a string, treating null, undefined and whitespace as ''.
+   * The same normalisation the registration path applies inline.
+   * @param {*} v any value
+   * @return {string} the trimmed string
+   */
+  _str(v) {
+    return (v === null || v === undefined) ? '' : String(v).trim();
+  },
+
+  /**
+   * Has this player pulled out?
+   *
+   * Repo hands back a real boolean for is_withdrawn because the column is in
+   * Config.BOOLEAN_FIELDS, but a row assembled anywhere else can still carry the
+   * literal "TRUE" the sheet stores. Both are honoured, so a withdrawn player is
+   * never treated as active by accident.
+   *
+   * @param {!Object} row a Players row
+   * @return {boolean} true when withdrawn
+   */
+  _isWithdrawn(row) {
+    const v = row ? row.is_withdrawn : false;
+    if (v === true) return true;
+    return String(v === null || v === undefined ? '' : v).trim().toUpperCase() === 'TRUE';
+  },
+
+  /**
+   * Validate an optional enum filter value.
+   * @param {*} value the supplied value; blank means "no filter"
+   * @param {!Object<string,string>} allowed the ENUM map to check against
+   * @param {string} label field name for the error message, e.g. "payment status"
+   * @return {string} the upper-cased value, or '' when no filter was asked for
+   * @throws {!Error} VALIDATION_FAILED listing the allowed values
+   */
+  _optionalEnum(value, allowed, label) {
+    const s = Players._str(value).toUpperCase();
+    if (!s) return '';
+    if (!Object.prototype.hasOwnProperty.call(allowed, s)) {
+      throw Util.AppError(ERR.VALIDATION_FAILED,
+        '"' + s.substring(0, 30) + '" is not a ' + label + '. Use one of: ' +
+        Object.keys(allowed).join(', ') + '.');
+    }
+    return s;
+  },
+
+  /**
+   * Require a real boolean.
+   *
+   * The strings "true" and "false" are accepted too: payloads are hand-built by
+   * the frontend and a checkbox value arrives as text often enough that
+   * rejecting it would be a bug report rather than a safety feature. Everything
+   * else — including 1, 0, "yes" and "" — is refused, because guessing what a
+   * caller meant is how a player gets withdrawn by accident.
+   *
+   * @param {*} value the supplied value
+   * @param {string} label field name for the error message
+   * @return {boolean} the boolean
+   * @throws {!Error} VALIDATION_FAILED
+   */
+  _requireBoolean(value, label) {
+    if (value === true || value === false) return value;
+    const s = Players._str(value).toLowerCase();
+    if (s === 'true') return true;
+    if (s === 'false') return false;
+    throw Util.AppError(ERR.VALIDATION_FAILED, label + ' must be true or false.');
+  },
+
+  /**
+   * Load a tournament row for an admin screen, or fail with NOT_FOUND.
+   *
+   * Separate from Players._requireTournament because that one's message is
+   * written for a player holding a registration link ("Please check the
+   * registration link"), which is nonsense on an admin console.
+   *
+   * @param {string} tournamentId the tournament id from the payload
+   * @return {!Object} the Tournaments row
+   * @throws {!Error} NOT_FOUND
+   */
+  _requireTournamentForAdmin(tournamentId) {
+    const row = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', tournamentId);
+    if (!row) {
+      // Caller-controlled text, so it is length-capped before it reaches a
+      // message the browser will render.
+      throw Util.AppError(ERR.NOT_FOUND,
+        'No tournament was found with the id "' + tournamentId.substring(0, 40) + '".');
+    }
+    return row;
   }
 };
 
 /**
- * Player route table. Both Phase 1 actions are PUBLIC POST — a player has no
- * account and never logs in (DESIGN.md §5.1).
+ * Player route table.
  *
- * Neither is offered on GET: both write or probe, and a GET would put the mobile
- * number into browser history and server logs.
+ * Both Phase 1 actions are PUBLIC POST — a player has no account and never logs
+ * in (DESIGN.md §5.1). Neither is offered on GET: both write or probe, and a GET
+ * would put the mobile number into browser history and server logs.
+ *
+ * The two Phase 2 actions are the opposite: authenticated, POST only, and every
+ * one of them re-checks tournament scope inside the handler as well as here.
  *
  * @return {!Object} route table fragment
  */
@@ -617,6 +1234,33 @@ function PlayerRoutes() {
        * @return {!Object} {player_id, serial_no, name, tournament_name, registered_at_display}
        */
       handler: (payload) => Players.register(payload)
+    },
+
+    'player.list': {
+      // ORGANISER is allowed, but only for their own tournament: the role check
+      // here lets them in, and Auth.requireTournament inside Players.list is what
+      // stops them reading another tournament's players (DESIGN.md §39).
+      auth: ['ADMIN', 'ORGANISER'],
+      methods: ['POST'],
+      /**
+       * @param {!Object} payload {tournamentId, filter, page, pageSize, sort}
+       * @param {!Object} session ADMIN or ORGANISER session
+       * @return {!Object} {rows, page, pageSize, total, totalPages, counts}
+       */
+      handler: (payload, session) => Players.list(payload, session)
+    },
+
+    'player.setWithdrawn': {
+      // ADMIN only. An organiser runs the auction; deciding that a paid-up player
+      // is out of the tournament is not theirs to do (CONTRACTS-PHASE2 §1).
+      auth: ['ADMIN'],
+      methods: ['POST'],
+      /**
+       * @param {!Object} payload {playerId, withdrawn, reason}
+       * @param {!Object} session ADMIN session
+       * @return {!Object} {player_id, serial_no, is_withdrawn}
+       */
+      handler: (payload, session) => Players.setWithdrawn(payload, session)
     }
   };
 }

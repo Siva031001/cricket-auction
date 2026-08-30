@@ -20,6 +20,9 @@ const AdminLoginPage = {
   /** Where a successful sign-in lands. */
   DASHBOARD_PATH: '/admin/dashboard',
 
+  /** This screen's own path. */
+  LOGIN_PATH: '/admin/login',
+
   /**
    * Per-render state. Recreated by every render() so a stale in-flight
    * request from a previous visit can never re-enable a button that no
@@ -254,7 +257,34 @@ const AdminLoginPage = {
     // is not an ADMIN still goes to /admin/dashboard and the server refuses
     // the actions they are not allowed to run. Authorisation is the server's
     // job; hiding a screen is not authorisation (DESIGN.md §5.6).
-    Router.navigate(AdminLoginPage.DASHBOARD_PATH, { replace: true });
+    Router.navigate(AdminLoginPage._destination(), { replace: true });
+  },
+
+  /**
+   * Where to go after signing in.
+   *
+   * App.requireAdmin parks the page the admin was actually trying to reach in
+   * App.intendedPath before bouncing them here, so a deep link survives the
+   * detour through the login form.
+   *
+   * @return {string} an app path
+   */
+  _destination: function () {
+    const wanted = (typeof App !== 'undefined' && App.intendedPath)
+      ? String(App.intendedPath)
+      : '';
+    if (typeof App !== 'undefined') App.intendedPath = null;   // one use only
+
+    // Same-site paths only. '//evil.com/x' and 'https://evil.com' both start
+    // a redirect off this origin, so neither is accepted — the whole point of
+    // the check is that this value came from a URL the visitor controls.
+    if (!wanted || wanted.charAt(0) !== '/' || wanted.charAt(1) === '/') {
+      return AdminLoginPage.DASHBOARD_PATH;
+    }
+    // Never bounce straight back to the login screen.
+    if (wanted === AdminLoginPage.LOGIN_PATH) return AdminLoginPage.DASHBOARD_PATH;
+
+    return wanted;
   },
 
   /**

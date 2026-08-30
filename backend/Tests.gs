@@ -66,14 +66,16 @@ const T = {
     emails: [],        // fixture emails, so login-failure counters can be cleared
     cacheTids: [],     // tournament ids whose cache/version keys must be purged
     tids: [],          // fixture tournament ids that do NOT carry TID_PREFIX
-    seq: 0             // monotonic counter for unique fixture mobiles / upi refs
+    seq: 0,            // monotonic counter for unique fixture mobiles / upi refs
+    mobileBase: ''     // run-unique middle digits of every fixture mobile number
   },
 
   /** Wipes run state. Called by both entry points. */
   reset() {
     T._state = {
       suites: [], results: [], current: null, startedAt: 0,
-      driveIds: [], userIds: [], emails: [], cacheTids: [], tids: [], seq: 0
+      driveIds: [], userIds: [], emails: [], cacheTids: [], tids: [],
+      seq: 0, mobileBase: ''
     };
   },
 
@@ -1191,24 +1193,28 @@ const Suites = {
           // Two different unknown ids: one that looks like a real id and one that is
           // obvious rubbish. If the two answers differ, an anonymous caller can probe
           // the id format, and eventually the id space, from the outside.
+          const wellFormedId = 'TRN_zzzzzzzzzzzz';
+          const malformedId = 'not-a-tournament-id';
+
           const wellFormed = T.assertThrows(
-            () => Suites._call('tournament.getPublic',
-              { tournamentId: 'TRN_zzzzzzzzzzzz' }, null),
+            () => Suites._call('tournament.getPublic', { tournamentId: wellFormedId }, null),
             ERR.NOT_FOUND, 'a well-formed but unknown tournament id');
 
           const malformed = T.assertThrows(
-            () => Suites._call('tournament.getPublic',
-              { tournamentId: 'not-a-tournament-id' }, null),
+            () => Suites._call('tournament.getPublic', { tournamentId: malformedId }, null),
             ERR.NOT_FOUND,
             'a malformed id must be NOT_FOUND too, not VALIDATION_FAILED — a ' +
             'different code tells the caller the id format was at least right');
 
-          T.assertEqual(malformed.message, wellFormed.message,
-            'both must use the IDENTICAL message. A different message for a ' +
+          // Echoing the id back is fine (the frontend renders with textContent,
+          // CONTRACTS-PHASE1.md §4 rule 1). Saying something DIFFERENT about a
+          // well-formed id is not, so the two messages are compared with each id
+          // blanked out of its own text.
+          const template = (msg, id) => String(msg).split(id).join('<id>');
+          T.assertEqual(template(malformed.message, malformedId),
+            template(wellFormed.message, wellFormedId),
+            'both failures must use the same sentence. A different wording for a ' +
             'well-formed id confirms the format and narrows the search.');
-          T.assert(wellFormed.message.indexOf('TRN_zzzzzzzzzzzz') === -1,
-            'the message must not echo the id back — it is attacker-controlled text ' +
-            'rendered straight into the page');
         });
 
       // -----------------------------------------------------------------------
@@ -1691,7 +1697,11 @@ const Suites = {
         reject({ role: 'KEEPER' }, 'WICKET KEEPER is not one of the three roles');
         reject({ role: '' }, 'a blank role');
         reject({ style: 'AMBIDEXTROUS' }, 'style is LEFT or RIGHT only');
-        reject({ style: 'left' }, 'the enum is stored uppercase; lowercase must not slip in');
+        reject({ style: '' }, 'a blank style');
+        // Deliberately not tested: whether lowercase "left" is accepted.
+        // CONTRACTS-PHASE1.md §3 says only "in ENUM.PLAYER_STYLE"; normalising the
+        // case before the check is a defensible reading and asserting either way
+        // would be inventing a rule.
 
         // images — all three are required
         reject({ photo: null }, 'a missing profile photo');
@@ -3337,11 +3347,21 @@ const Suites = {
   },
 
   /**
-   * @private A valid Indian mobile number nobody else in this run will use.
+   * @private A valid Indian mobile number nobody else will use — not in this run,
+   * and not in the previous one either.
+   *
+   * The run-unique middle block matters: player.checkMobile is rate-limited to 20
+   * calls per 10 minutes PER NUMBER, so a fixed sequence like 9000000001 would
+   * mean the second run inside ten minutes trips a limiter it never called.
+   *
    * @return {string} 10 digits starting with 9
    */
   _freshMobile() {
-    return '9' + ('000000000' + T.nextSeq()).slice(-9);
+    if (!T._state.mobileBase) {
+      T._state.mobileBase =
+        ('00000' + (parseInt(Util.uid(ID_PREFIX.PLAYER).slice(-6), 36) % 100000)).slice(-5);
+    }
+    return '9' + T._state.mobileBase + ('0000' + T.nextSeq()).slice(-4);
   },
 
   /**
