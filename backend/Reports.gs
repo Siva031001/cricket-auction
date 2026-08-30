@@ -347,7 +347,10 @@ const Reports = {
   /**
    * Read the tabs a report needs, exactly once each.
    *
-   * @param {!Object} want flags: {tournaments, players, payments, teams, results, users, audit}
+   * AuditLog is not here on purpose: audit.list does not need the tournament
+   * lookup _gather() performs, so it does its own two reads.
+   *
+   * @param {!Object} want flags: {tournaments, players, payments, teams, results, users}
    * @return {!Object} raw unfiltered row arrays, [] for anything not requested
    */
   _read(want) {
@@ -358,8 +361,7 @@ const Reports = {
       payments: w.payments ? Repo.readAll(SHEETS.PAYMENTS) : [],
       teams: w.teams ? Repo.readAll(SHEETS.TEAMS) : [],
       results: w.results ? Repo.readAll(SHEETS.AUCTION_RESULTS) : [],
-      users: w.users ? Repo.readAll(SHEETS.USERS) : [],
-      audit: w.audit ? Repo.readAll(SHEETS.AUDIT_LOG) : []
+      users: w.users ? Repo.readAll(SHEETS.USERS) : []
     };
   },
 
@@ -1427,7 +1429,15 @@ const Reports = {
       throw Util.AppError(ERR.VALIDATION_FAILED,
         label + ' must be a date like 2026-08-31, got "' + s.substring(0, 40) + '".');
     }
-    if (isNaN(Date.parse(s.length === 10 ? Util.istDayStartUtc(s) : s))) {
+    // istDayStartUtc rejects a day that does not exist (2026-02-30). Its own
+    // message does not name the field, so it is re-thrown with one that does.
+    let probe;
+    try {
+      probe = Date.parse(s.length === 10 ? Util.istDayStartUtc(s) : s);
+    } catch (err) {
+      probe = NaN;
+    }
+    if (isNaN(probe)) {
       throw Util.AppError(ERR.VALIDATION_FAILED,
         label + ' "' + s.substring(0, 40) + '" is not a real date.');
     }

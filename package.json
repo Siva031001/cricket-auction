@@ -16,13 +16,14 @@
   ],
   "scripts": {
     "check": "node tools/check.js",
-    "test": "node tools/check.js",
+    "test": "node tools/check.js && node tools/test.js",
     "push": "npm run check && clasp push",
     "pull": "clasp pull",
     "open": "clasp open",
     "deploy": "clasp push && clasp deploy --deploymentId",
     "login": "clasp login",
-    "logout": "clasp logout"
+    "logout": "clasp logout",
+    "test:behaviour": "node tools/test.js"
   },
   "devDependencies": {
     "@google/clasp": "^2.4.2"

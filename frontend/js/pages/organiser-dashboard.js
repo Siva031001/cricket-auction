@@ -131,19 +131,73 @@ const OrganiserDashboardPage = {
     }
 
     const query = (ctx && ctx.query) || {};
-    const tid = OrganiserDashboardPage._resolveTournamentId(ctx);
+    state.query = query;
 
-    if (!tid) {
-      OrganiserDashboardPage._renderNoTournament();
+    const tid = OrganiserDashboardPage._resolveTournamentId(ctx);
+    if (tid) {
+      state.tournamentId = tid;
+      OrganiserDashboardPage._route(state);
       return;
     }
-    state.tournamentId = tid;
 
+    // Nothing local knows the tournament — an organiser who signed in through
+    // the ordinary form rather than a join link, on a fresh browser. The
+    // session itself knows, so ask it. This is one extra round trip in the one
+    // case where the alternative is a dead end.
+    OrganiserDashboardPage._askSession(state);
+  },
+
+  /**
+   * Ask the server which tournament this session belongs to, then carry on.
+   * @param {!Object} state
+   * @return {void}
+   */
+  _askSession: function (state) {
+    const shell = OrganiserDashboardPage._shell('Teams');
+    state.errors = shell.errors;
+    state.notices = shell.notices;
+    shell.body.appendChild(UI.spinner('Loading your tournament…'));
+    OrganiserDashboardPage._mount(shell.main);
+
+    OrganiserDashboardPage._call('auth.me', {})
+      .then(function (me) {
+        if (!OrganiserDashboardPage._current(state)) return;
+
+        const id = OrganiserDashboardPage._safeId(me && me.tournament_id);
+        if (!id) {
+          // An ADMIN has no tournament of their own (CONTRACTS.md §2.2), so
+          // there is genuinely nothing to show without a ?t=.
+          OrganiserDashboardPage._renderNoTournament();
+          return;
+        }
+
+        state.tournamentId = id;
+        try {
+          window.localStorage.setItem(OrganiserDashboardPage.TOURNAMENT_KEY, id);
+        } catch (e) {
+          /* convenience only */
+        }
+        OrganiserDashboardPage._route(state);
+      })
+      .catch(function (err) {
+        if (OrganiserDashboardPage._handled(err) ||
+            !OrganiserDashboardPage._current(state)) return;
+        OrganiserDashboardPage._renderNoTournament();
+        OrganiserDashboardPage._showError(OrganiserDashboardPage._state.errors, err);
+      });
+  },
+
+  /**
+   * Pick the view now that the tournament is known.
+   * @param {!Object} state
+   * @return {void}
+   */
+  _route: function (state) {
+    const query = state.query || {};
     if (String(query.view || '') === 'squad') {
       OrganiserDashboardPage._renderSquad(String(query.team || ''));
       return;
     }
-
     OrganiserDashboardPage._renderTeams();
   },
 
@@ -203,14 +257,17 @@ const OrganiserDashboardPage = {
   /**
    * Which tournament this organiser is working on.
    *
-   * There is no "who am I" endpoint in the Phase 3 contract, so the id comes
-   * from, in order:
+   * There is no tournament id in the URL of a plain /organiser/dashboard
+   * visit, so it comes from, in order:
    *   1. ?t= in the address — always wins, so a link can be shared and an
    *      admin can open an organiser's dashboard for a named tournament;
    *   2. the copy OrganiserJoinPage saved when the organiser joined;
-   *   3. the admin shell's remembered selection, if app.js is present.
-   * It is a convenience only. The server re-checks the caller's own
-   * tournament_id on every action (DESIGN.md §5.6), so a wrong id here
+   *   3. the admin shell's remembered selection, if app.js is present;
+   *   4. failing all three, render() asks the server with auth.me, which is
+   *      the authoritative answer and the only one that survives a fresh
+   *      browser.
+   * The first three are conveniences only. The server re-checks the caller's
+   * own tournament_id on every action (DESIGN.md §5.6), so a wrong id here
    * produces a refusal, never someone else's data.
    *
    * @param {Object} ctx
@@ -443,9 +500,11 @@ const OrganiserDashboardPage = {
     const help = document.createElement('ul');
     help.className = 'org__help-list';
     [
-      'If you are an organiser, open the join link the admin sent you, or sign ' +
-        'in again — signing in tells this screen which tournament is yours.',
-      'If you are an admin, choose a tournament on the admin dashboard first.'
+      'If you are an organiser, sign in again — your account is tied to one ' +
+        'tournament, and signing in tells this screen which one.',
+      'If you are an admin, choose a tournament on the admin dashboard first. ' +
+        'An admin account is not tied to a tournament, so this screen needs to ' +
+        'be told which one to open.'
     ].forEach(function (text) {
       const li = document.createElement('li');
       li.textContent = text;
@@ -1557,6 +1616,18 @@ const OrganiserDashboardPage = {
     h2.className = 'panel__subtitle org-squad__name';
     h2.textContent = String(team.team_name || 'Squad');
     wrap.appendChild(h2);
+
+    /* The server compares its cached counters against the player rows it just
+       read and reports the disagreement rather than papering over it
+       (CONTRACTS-PHASE3 §3). Say so: the numbers below are the cache, and an
+       admin fixes the drift with a recount. Silently showing figures known to
+       be wrong is how a purse argument starts mid-auction. */
+    if (data.counters_stale) {
+      wrap.appendChild(UI.banner('info',
+        'These totals do not match the players listed below. The player list is ' +
+        'right; the totals are a stored count that has drifted. Ask an admin to ' +
+        'run a team recount to put it straight.'));
+    }
 
     const list = document.createElement('dl');
     list.className = 'org-totals__list org-squad__totals';

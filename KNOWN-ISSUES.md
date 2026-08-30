@@ -60,13 +60,42 @@ What exists instead: the lock-boundary test (upload order), the simulated double
 
 **Run the real test after deploying, before the auction.** This is the one that matters most.
 
-### 9. Harnesses live in `/tmp` and will be lost
-Agents built extensive Node harnesses (`/tmp/pay_test.js`, `/tmp/players_test.js`, `/tmp/teams_test.js`, `/tmp/org_test.js`, front-end DOM stubs). They are the only way to test this code without Google.
+### 9. Harnesses preserved — RESOLVED
+All 15 behavioural harnesses are now in `tools/harness/`, runnable with `node tools/test.js` (~1131 assertions). `tools/check.js` covers structure. Both are committed.
 
-`tools/check.js` is committed and covers structure. The behavioural harnesses should be pulled into `tools/` too.
+### 10. Stale harness assertion — RESOLVED
+The payments harness pinned `Audit.ACTIONS` at a count of 18; there are now 20. Replaced with an exact-set comparison, which is both stabler (legitimate additions do not break it spuriously) and stronger (it names what changed).
 
-### 10. Stale assertion in a shared harness
-`/tmp/pay_test.js` pins `Audit.ACTIONS` at 18 entries; there are now 20 (`PLAYER_WITHDRAWN`, `ORGANISER_DISABLED`, `ORGANISER_LINK_RESENT`). Harness problem, not a code defect.
+### 10a. Offline replay must re-fetch the auction version — INTEGRATION REQUIRED
+**Two agents found this independently, which is why it is written down.**
+
+`auction.markSold` requires `expectedVersion` and rejects a stale one with `STALE_STATE` (§4.1 step 1). That check is what stops a stale browser tab acting on old data, and it must stay.
+
+But a sale recorded offline captures a version that is guaranteed stale by the time the connection returns. Replaying it verbatim means **every queued sale fails**.
+
+So `Offline.sync(callFn)` takes an injected callback precisely so the caller can attach the *current* version to each item as it replays. `offline.js` classifies `STALE_STATE` as a hard stop with a specific hint, and warns at `enqueue` time if a payload already contains `expectedVersion`.
+
+**The auction console must implement that callback correctly.** No bypass was added on either side — the lock and the re-read still block a double sale.
+
+
+### 13. Can Drive thumbnail URLs be read as bytes from the deployed origin?
+**Status:** unknown, and it decides whether offline photos work at all.
+
+`Offline.downloadPack` caches player photos so the display keeps working without internet. But `photo_thumb_url` points at `drive.google.com/thumbnail`, and reading a cross-origin image's *bytes* needs a CORS header Drive does not reliably send. An `<img>` renders fine; `fetch(...).blob()` may not.
+
+`offline.js` therefore takes an injected `imageFn` rather than fetching directly, and refuses with `NO_IMAGE_FETCHER` instead of silently caching nothing.
+
+**Test in a browser against the real deployment.** If the bytes are unreadable, the fallback is to route images through the Apps Script API as base64 — slower, but it works.
+
+### 14. Two integration wires still open
+- **`API.getBytes(url)`** does not exist in `api.js`. Without it, `Offline.downloadPack` cannot cache photos (see item 13). Alternative: call `Offline.setTransport({imageFn})` at startup.
+- **The display snapshot carries no roster.** `display.js` pre-warms each thumbnail the first time that player appears, which is best-effort. Adding `roster: [{photo_thumb_url}]` to the `auction.displayState` snapshot would make the "instant reveal" guarantee complete.
+
+### 15. Withdrawn players in the player export
+The 11 CSV columns are fixed by the requirement and none carries withdrawal, so Payment Status renders as `Verified (withdrawn)`. A 12th column would be cleaner if the format can change.
+
+### 16. CSV formula injection is deliberately not neutralised
+`_csvCell` does not escape a leading `=`, `+`, `-` or `@`, because `_excelText` emits a real formula on purpose for mobile numbers. Names and UPI references are validated at entry so none can begin with one. Worth revisiting if validation ever loosens.
 
 ---
 

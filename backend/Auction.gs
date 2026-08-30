@@ -7,8 +7,8 @@
  *
  * 1. EVERY STATE CHANGE RUNS INSIDE Repo.withLock, RE-READS FROM THE SHEET, AND
  *    VALIDATES THERE. A value that arrived from a browser is a suggestion, never
- *    a fact. Auction._sale() is the single implementation of the §4.1 order and
- *    every write path goes through Auction._write().
+ *    a fact. Auction._write() owns steps 1, 2, 3, 14 and 15 of the §4.1 order and
+ *    every write path in this file goes through it.
  *
  * 2. AuctionResults IS THE TRUTH. Teams.purse_used and Teams.players_count are a
  *    cache of it, maintained inside this lock (CONTRACTS-PHASE3 §3). Nothing here
@@ -840,7 +840,9 @@ const Auction = {
       const v = Auction._bumpAndRebuild(tid, { trn: trn, players: rows });
 
       return {
-        player: Auction._card(updated, Auction._teamIndex(Repo.readAll(SHEETS.TEAMS), tid)),
+        // teamsById was built before the lock; a times_called bump cannot have
+        // renamed a team, so there is no reason to read the tab again.
+        player: Auction._card(updated, teamsById),
         revealed: true,
         v: v,
         message: ''
@@ -1204,7 +1206,7 @@ const Auction = {
    * Repo.findBy inside a loop (CONTRACTS-PHASE4-7 cross-cutting rule 7).
    *
    * @param {{tournamentId: string, expectedVersion: *, session: !Object,
-   *          requireLive: (boolean|undefined),
+   *          requireLive: (boolean|undefined), mutatesTournament: (boolean|undefined),
    *          body: function(!Object): !Object}} spec what to run
    * @return {!Object} the body's result, with the new version added
    */
@@ -1242,11 +1244,13 @@ const Auction = {
       Repo.flush();
 
       // ---- Step 15. Bump, then rebuild the snapshot from the same lock.
-      // Nothing is preloaded: the body has just changed Players, Teams and
-      // possibly the tournament's own status, so every row is re-read. That is
-      // the price of a snapshot that is never one write behind the version it
-      // is stamped with.
-      out.v = Auction._bumpAndRebuild(tid);
+      // Players, Teams and AuctionResults are deliberately re-read rather than
+      // patched in memory: the snapshot must describe the sheet, not what the
+      // body believes it wrote. The tournament row is handed over only when the
+      // body cannot have changed it — close and reopen do, everything else
+      // does not, and re-reading a nine-row tab per sale is pure waste.
+      out.v = Auction._bumpAndRebuild(tid,
+        spec.mutatesTournament === true ? undefined : { trn: trn });
       return out;
     });
   },
@@ -1391,7 +1395,11 @@ const Auction = {
         Auction._setCurrentPlayerId(tid, Auction._str(player.player_id));
 
         return {
-          player: Auction._card(updatedPlayer, Auction._teamIndex(Repo.readAll(SHEETS.TEAMS), tid)),
+          // ctx.teamsById is enough to name the buyer: the sale changed the
+          // team's counters, never its name, and the fresh counters come back
+          // in `team` below. Re-reading the whole Teams tab here would cost a
+          // second Spreadsheet read per sale for nothing.
+          player: Auction._card(updatedPlayer, ctx.teamsById),
           team: Auction._teamSummary(updatedTeam),
           result: { auction_id: Auction._str(result.auction_id), status: ENUM.RESULT_STATUS.SOLD },
           // Advisory, after the fact, never a reason to refuse (§4.7).
@@ -1765,7 +1773,7 @@ const Auction = {
         Auction._setCurrentPlayerId(tid, Auction._str(player.player_id));
 
         return {
-          player: Auction._card(updatedPlayer, Auction._teamIndex(Repo.readAll(SHEETS.TEAMS), tid)),
+          player: Auction._card(updatedPlayer, ctx.teamsById),
           result: {
             auction_id: Auction._str(result.auction_id),
             status: Auction._str(result.status),
@@ -1825,6 +1833,7 @@ const Auction = {
       expectedVersion: payload.expectedVersion,
       session: session,
       requireLive: false,
+      mutatesTournament: true,
       body: (ctx) => {
         const status = Auction._str(ctx.trn.status).toUpperCase();
         if (status === ENUM.TOURNAMENT_STATUS.AUCTION_CLOSED) {
@@ -1908,6 +1917,7 @@ const Auction = {
       expectedVersion: payload.expectedVersion,
       session: session,
       requireLive: false,
+      mutatesTournament: true,
       body: (ctx) => {
         const status = Auction._str(ctx.trn.status).toUpperCase();
         if (status === ENUM.TOURNAMENT_STATUS.AUCTION_LIVE) {
