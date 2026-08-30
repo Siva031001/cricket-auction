@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loading…</title>
+<meta name="robots" content="noindex">
+<!--
+================================================================================
+  404.html — the GitHub Pages deep-link trick.
+
+  WHY THIS FILE EXISTS (it looks like nonsense without this explanation):
+
+  GitHub Pages is a dumb static file host. There is no rewrite rule, no
+  .htaccess, no "serve index.html for everything" switch. So when someone
+  opens a deep link directly — types it, scans a QR code, or hits reload on
+  /cricket-auction/register/TRN_k3m9x1qz7f2a — Pages looks for a real file at
+  that path, does not find one, and serves THIS file with a 404 status.
+
+  That is the whole loophole. Pages hands us control on any unknown path, so
+  we grab the path the user actually wanted, stash it in a query string, and
+  bounce to /cricket-auction/ which IS a real file (index.html). index.html
+  then reads the query string and calls history.replaceState to put the
+  original URL back in the address bar before the router runs.
+
+  The flow, end to end:
+
+    1. Browser asks for   /cricket-auction/register/TRN_abc?x=1
+    2. Pages 404s and serves this file (status 404, but the HTML runs).
+    3. This script computes the app path after BASE_PATH:  /register/TRN_abc
+    4. location.replace to
+         /cricket-auction/?ca_redirect=%2Fregister%2FTRN_abc%3Fx%3D1
+    5. Pages serves the real index.html.
+    6. app.js sees ca_redirect, calls
+         history.replaceState(null, '', '/cricket-auction/register/TRN_abc?x=1')
+       so the address bar reads correctly and is shareable again.
+    7. Router.start() matches /register/:tournamentId as if nothing happened.
+
+  location.replace (not location.href) keeps this bounce OUT of the history
+  stack, so the Back button goes to wherever the user came from, not into a
+  redirect loop.
+
+  Everything runs inline in <head> with no external <script src>. That is
+  deliberate: a relative script URL on this page resolves against the URL the
+  user ATTEMPTED, not against where this file really lives, so
+  <script src="js/config.js"> would 404 as well. Which is also why BASE_PATH
+  is duplicated below instead of imported.
+
+  >>> KEEP BASE_PATH BELOW IN SYNC WITH CONFIG.BASE_PATH IN js/config.js <<<
+================================================================================
+-->
+<script>
+(function () {
+  'use strict';
+
+  // Must match CONFIG.BASE_PATH in js/config.js.
+  // Repo renamed?     change both.
+  // Hosted at a root? set both to ''.
+  var BASE_PATH = '/cricket-auction';
+
+  // Must match CONFIG.REDIRECT_PARAM in js/config.js.
+  var REDIRECT_PARAM = 'ca_redirect';
+
+  var base = BASE_PATH.replace(/\/+$/, '');
+  var path = window.location.pathname || '/';
+
+  // Strip BASE_PATH so the saved value is an app route, matching what
+  // Router.stripBase() produces.
+  if (base && (path === base || path.indexOf(base + '/') === 0)) {
+    path = path.slice(base.length);
+  }
+  if (path.charAt(0) !== '/') path = '/' + path;
+
+  var wanted = path + window.location.search + window.location.hash;
+
+  // Guard against a redirect loop: if index.html itself were ever missing,
+  // Pages would serve this file again for the bounce target. Bailing out to
+  // a plain message beats spinning forever.
+  if (path === '/' || path === '/index.html') {
+    document.addEventListener('DOMContentLoaded', function () {
+      document.body.innerHTML =
+        '<main class="panel"><h1>Page not found</h1>' +
+        '<p>This app is not deployed correctly: index.html is missing at ' +
+        (base || '/') + '/.</p></main>';
+    });
+    return;
+  }
+
+  window.location.replace(
+    (base || '') + '/?' + REDIRECT_PARAM + '=' + encodeURIComponent(wanted)
+  );
+}());
+</script>
+<style>
+  /* Inline, for the same reason as the script: a relative CSS href would
+     resolve against the attempted URL and 404. This page is visible for a
+     few milliseconds at most. System fonts only, no download. */
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    color: #1F2933;
+    background: #F7F9FB;
+    text-align: center;
+    padding: 24px;
+  }
+  .panel { max-width: 32rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+  p  { margin: 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <main class="panel">
+    <h1>Loading…</h1>
+    <p>Taking you to the page you asked for. If nothing happens, JavaScript is turned off in this browser.</p>
+  </main>
+</body>
+</html>

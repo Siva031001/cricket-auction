@@ -1,0 +1,32 @@
+{
+  "name": "cricket-auction",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cricket tournament auction system. NPM IS A DEVELOPER CONVENIENCE FOR CLASP ONLY. The application itself has ZERO runtime dependencies and NO build step: the backend is Google Apps Script (.gs in backend/) and the frontend is static HTML/CSS/vanilla JS (frontend/) served by GitHub Pages exactly as committed. Node never runs in production.",
+  "_readme": [
+    "Do not add a bundler, a transpiler, a framework, or any runtime dependency.",
+    "backend/*.gs is Apps Script, not Node: no require, no import, no npm packages.",
+    "frontend/ must stay servable as plain static files from GitHub Pages.",
+    "The only reason this file exists is to pin clasp and hold four shortcuts.",
+    "Usage: npm run deploy -- <deploymentId>. Get the id from 'npx clasp deployments'.",
+    "Use the SAME deploymentId every time - a new deployment means a NEW /exec",
+    "URL and the frontend keeps calling the old code. See RUNBOOK.md Part 2.",
+    "There is no 'npm test'. Tests run in the Apps Script editor via",
+    "runAllTests(), and only against a sheet whose Config env key is TEST."
+  ],
+  "scripts": {
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "open": "clasp open",
+    "deploy": "clasp push && clasp deploy --deploymentId",
+    "login": "clasp login",
+    "logout": "clasp logout"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

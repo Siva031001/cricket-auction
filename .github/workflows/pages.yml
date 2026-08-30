@@ -1,0 +1,61 @@
+# Publishes frontend/ to GitHub Pages.
+#
+# Why this file exists: GitHub Pages can only serve from the repository root or
+# from /docs when deploying straight from a branch. Our static site lives in
+# frontend/, so a branch deployment cannot see it. This workflow uploads that one
+# folder instead, which keeps the repo layout honest (backend/ and frontend/ side
+# by side) rather than renaming frontend/ to docs/.
+#
+# One-time setup: repository Settings -> Pages -> Source: "GitHub Actions".
+# Free on public repositories.
+#
+# This publishes static files only. It does NOT deploy the Apps Script backend —
+# that is a separate clasp push plus a deployment version bump. See RUNBOOK.md
+# part 2, because getting that wrong is the most common mistake in this project.
+
+name: Deploy frontend to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deployments race. Do not cancel one in flight — a half-finished
+# Pages deploy on tournament week is worse than waiting for it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail loudly if the API URL was never filled in. Otherwise the site
+      # deploys fine and every call fails at the venue with a confusing error.
+      - name: Check API_BASE_URL has been configured
+        run: |
+          if grep -q 'PASTE_YOUR' frontend/js/config.js; then
+            echo "::error::frontend/js/config.js still has the placeholder API_BASE_URL."
+            echo "Set it to your Apps Script /exec URL before deploying. See RUNBOOK.md part 1."
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./frontend
+      - id: deployment
+        uses: actions/deploy-pages@v4

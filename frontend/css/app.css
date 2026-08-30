@@ -1,0 +1,610 @@
+/* =============================================================================
+   app.css — the whole stylesheet. Two jobs, nothing else:
+
+     (a) A mobile-first base for the registration and admin routes.
+         DESIGN.md §12 (§49): single column, tap targets >= 48px, big form
+         fields, readable at arm's length on a phone, obvious errors.
+
+     (b) A projector theme, scoped to the display route only.
+         DESIGN.md §8 (§19/§50): near-black #0B0F14, near-white text,
+         contrast >= 12:1, fluid type via clamp(), and a safe-area margin
+         because a venue projector crops roughly 15% off the edges.
+
+   System font stacks only. No @font-face, no @import, no CDN. A font that
+   fails to download at the venue is a font that ruins the auction.
+
+   Contents
+     1. Design tokens
+     2. Reset and base
+     3. Layout: panels, banners
+     4. Typography helpers
+     5. Forms and buttons (mobile-first, 48px minimum)
+     6. Errors
+     7. Status pills — colour + word + shape, never colour alone
+     8. Phase 0 placeholder chrome
+     9. Projector theme, scoped to [data-route="display"]
+    10. Accessibility preferences
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Design tokens
+   -------------------------------------------------------------------- */
+
+:root {
+
+  /* --- Status colours. DESIGN.md §8, table "Status colours (§51)". ------
+     Fixed values, chosen to survive a washed-out projector and to stay
+     distinguishable with red-green colour blindness. Every status also
+     carries a word and a shape (section 7) because colour on its own is
+     not an accessible signal, and a dim projector eats saturation.
+
+     Deliberately NOT red for UN-SOLD: red-on-dark loses legibility on a
+     dim projector, and red reads as "error" rather than "not sold yet".
+     ------------------------------------------------------------------- */
+  --status-pending-bg:  #B45309;   /* amber */
+  --status-pending-fg:  #FFFFFF;
+  --status-pending-mark: "\25CF";  /* ● filled dot */
+
+  --status-sold-bg:     #15803D;   /* green */
+  --status-sold-fg:     #FFFFFF;
+  --status-sold-mark:   "\2713";   /* ✓ tick */
+
+  --status-unsold-bg:   #475569;   /* slate */
+  --status-unsold-fg:   #FFFFFF;
+  --status-unsold-mark: "\2715";   /* ✕ cross */
+
+  /* --- Light theme, used by registration and admin --------------------- */
+  --bg:            #F7F9FB;
+  --surface:       #FFFFFF;
+  --ink:           #10181F;   /* on --surface: ~16.5:1 */
+  --ink-muted:     #48555F;   /* on --surface: ~8.4:1, body-copy safe */
+  --line:          #D3DBE2;
+  --line-strong:   #9AA7B2;
+  --accent:        #0F5FA6;   /* on white: ~6.4:1 */
+  --accent-ink:    #FFFFFF;
+  --danger:        #B3261E;   /* on white: ~6.4:1 */
+  --danger-bg:     #FDECEA;
+
+  /* --- Projector theme, section 9 -------------------------------------- */
+  --proj-bg:       #0B0F14;   /* near-black, DESIGN.md §8 */
+  --proj-ink:      #F2F5F8;   /* on --proj-bg: ~17.6:1, comfortably over 12:1 */
+  --proj-ink-dim:  #C8D2DC;   /* on --proj-bg: ~12.6:1, still over the bar */
+  --proj-line:     #223040;
+
+  /* --- Spacing and shape ----------------------------------------------- */
+  --tap:           48px;      /* minimum tap target, DESIGN.md §12 */
+  --space-1:       0.25rem;
+  --space-2:       0.5rem;
+  --space-3:       0.75rem;
+  --space-4:       1rem;
+  --space-5:       1.5rem;
+  --space-6:       2rem;
+  --radius:        10px;
+  --radius-pill:   999px;
+
+  /* --- Fonts. System stacks only. -------------------------------------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "Helvetica Neue", "Noto Sans", Arial, sans-serif,
+               "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Liberation Mono", monospace;
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Reset and base — mobile first. No media query here; the phone layout
+      IS the default, and wider screens only widen the container.
+   -------------------------------------------------------------------- */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  /* 100% keeps the user's own browser font size. Never px-lock the root:
+     plenty of players enlarge text on their phone. */
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  /* 1.0625rem ~ 17px: readable at arm's length without zooming. */
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+img { max-width: 100%; height: auto; display: block; }
+
+a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* One visible focus style everywhere. Never remove it — the admin console
+   gets driven from a keyboard during the auction. */
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   3. Layout — single column, always. DESIGN.md §12.
+   -------------------------------------------------------------------- */
+
+.app {
+  /* Respect the notch / home indicator on phones. */
+  padding:
+    max(var(--space-4), env(safe-area-inset-top))
+    max(var(--space-4), env(safe-area-inset-right))
+    max(var(--space-6), env(safe-area-inset-bottom))
+    max(var(--space-4), env(safe-area-inset-left));
+}
+
+.panel {
+  /* ~34rem keeps line length readable on a desktop without turning the
+     registration form into a wide multi-column layout. */
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.panel + .panel { margin-top: var(--space-4); }
+
+.panel__title {
+  margin: 0 0 var(--space-2);
+  font-size: 1.5rem;
+  line-height: 1.25;
+  font-weight: 700;
+}
+
+.panel__subtitle {
+  margin: var(--space-5) 0 var(--space-2);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.panel__note {
+  margin: 0 0 var(--space-4);
+  color: var(--ink-muted);
+}
+
+/* Full-width message strip: setup warning, offline notice, noscript. */
+.banner {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  line-height: 1.45;
+}
+
+.banner--error {
+  background: var(--danger-bg);
+  border-bottom-color: var(--danger);
+  color: var(--danger);
+}
+
+
+/* -----------------------------------------------------------------------
+   4. Typography helpers
+   -------------------------------------------------------------------- */
+
+.kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(8rem, auto) 1fr;
+  gap: var(--space-1) var(--space-4);
+}
+
+.kv dt {
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+.kv dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  /* Player and tournament ids are long and unbreakable. */
+  overflow-wrap: anywhere;
+}
+
+
+/* -----------------------------------------------------------------------
+   5. Forms and buttons — mobile first. DESIGN.md §12.
+      Every interactive element is at least 48px tall.
+   -------------------------------------------------------------------- */
+
+.field { margin-bottom: var(--space-5); }
+
+.field__label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-weight: 600;
+}
+
+.field__hint {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+.input,
+.select,
+.textarea {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-3) var(--space-4);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  /* 1rem minimum. Anything smaller makes iOS Safari zoom the page on focus,
+     which then leaves the form half off-screen. */
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.textarea { min-height: 7rem; resize: vertical; }
+
+.select {
+  /* Let the platform draw the picker; a custom one is worse on a phone. */
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+                    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+  background-position: right 1.25rem center, right 1rem center;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 2.75rem;
+}
+
+.input:focus, .select:focus, .textarea:focus { border-color: var(--accent); }
+
+.input::placeholder, .textarea::placeholder { color: var(--line-strong); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-3) var(--space-5);
+  border: 2px solid transparent;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: inherit;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  /* Stops the 300ms tap delay and double-tap zoom on the submit button. */
+  touch-action: manipulation;
+}
+
+.btn + .btn { margin-top: var(--space-3); }
+
+.btn--secondary {
+  background: var(--surface);
+  color: var(--accent);
+  border-color: var(--line-strong);
+}
+
+.btn[disabled], .btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Checkbox / radio rows still need a 48px hit area even though the control
+   itself is small. */
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+
+.choice input[type="checkbox"],
+.choice input[type="radio"] {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+
+/* -----------------------------------------------------------------------
+   6. Errors — never colour alone. Each error carries a word and a "!" mark.
+   -------------------------------------------------------------------- */
+
+.field--invalid .input,
+.field--invalid .select,
+.field--invalid .textarea {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.field__error,
+.form-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.field__error::before,
+.form-error::before {
+  content: "\26A0";           /* ⚠ warning sign, so the meaning survives
+                                 greyscale printing and colour blindness */
+  flex: 0 0 auto;
+  font-size: 1.1em;
+  line-height: 1.4;
+}
+
+.form-error {
+  padding: var(--space-3) var(--space-4);
+  border: 2px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Status pills — PENDING / SOLD / UN-SOLD.
+      DESIGN.md §8: "colour + text + icon". The ::before shape and the
+      visible word are both mandatory. Colour is the third signal, not the
+      first, so the pill still reads on a washed-out projector, in
+      greyscale, and for a red-green colour-blind viewer.
+   -------------------------------------------------------------------- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.35em 0.9em;
+  border-radius: var(--radius-pill);
+  /* A light outline separates the pill from the background even when a
+     projector crushes the colour difference to nearly nothing. */
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* The shape. aria-hidden is unnecessary because ::before content is not
+   exposed to most screen readers, and the word beside it says the same
+   thing anyway. */
+.status::before {
+  content: var(--status-mark, "\25CF");
+  font-size: 1.05em;
+  line-height: 1;
+}
+
+.status--pending {
+  --status-mark: var(--status-pending-mark);   /* ● dot */
+  background: var(--status-pending-bg);
+  color: var(--status-pending-fg);
+}
+
+.status--sold {
+  --status-mark: var(--status-sold-mark);      /* ✓ tick */
+  background: var(--status-sold-bg);
+  color: var(--status-sold-fg);
+}
+
+.status--unsold {
+  --status-mark: var(--status-unsold-mark);    /* ✕ cross */
+  background: var(--status-unsold-bg);
+  color: var(--status-unsold-fg);
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Phase 0 placeholder chrome. Delete once real screens land.
+   -------------------------------------------------------------------- */
+
+.route-nav__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.route-nav__link {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Projector theme — scoped to the display route ONLY.
+      app.js sets <body data-route="display"> for /auction/:id/display, so
+      none of this can leak into the phone screens.
+      DESIGN.md §8 (§19/§50).
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] {
+  background: var(--proj-bg);
+  color: var(--proj-ink);           /* ~17.6:1 against #0B0F14 */
+  /* Nothing scrolls on a projector; a scrollbar means content is lost. */
+  overflow: hidden;
+  cursor: none;
+}
+
+body[data-route="display"] .app {
+  /* SAFE AREA. Assume the projector crops ~15% overall, so keep everything
+     inside 7.5% on each edge (DESIGN.md §8, "projector reality checks").
+     min() stops the margin becoming absurd on a very wide screen. */
+  padding: min(7.5vh, 6rem) min(7.5vw, 8rem);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+body[data-route="display"] .panel {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+/* Fluid type. The player name is the single most important thing in the
+   room, so it scales with viewport width exactly as DESIGN.md §8 specifies.
+   Assume the projector is 1024x768, not 1080p. */
+body[data-route="display"] .panel__title,
+body[data-route="display"] .display-name {
+  font-size: clamp(48px, 7vw, 140px);
+  line-height: 1.02;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.15em;
+  /* Long names must not silently overflow off a cropped edge. */
+  overflow-wrap: anywhere;
+}
+
+/* Serial number: very large, top of the details column. */
+body[data-route="display"] .display-serial {
+  font-size: clamp(40px, 5.5vw, 110px);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--proj-ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Role / style / age line. */
+body[data-route="display"] .display-meta,
+body[data-route="display"] .panel__note {
+  font-size: clamp(20px, 2.6vw, 52px);
+  line-height: 1.6;
+  color: var(--proj-ink-dim);       /* ~12.6:1, still above the 12:1 bar */
+  text-transform: none;
+}
+
+body[data-route="display"] .display-amount {
+  font-size: clamp(36px, 6vw, 120px);
+  font-weight: 800;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Photo left ~45%, details right ~55% (DESIGN.md §8). Stacks on a portrait
+   or very narrow display so nothing is cut off. */
+body[data-route="display"] .display-layout {
+  display: grid;
+  grid-template-columns: 45fr 55fr;
+  gap: min(5vw, 5rem);
+  align-items: center;
+  width: 100%;
+}
+
+@media (max-aspect-ratio: 1/1) {
+  body[data-route="display"] .display-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+body[data-route="display"] .display-photo {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: var(--radius);
+  border: 4px solid var(--proj-line);
+  background: #121A22;
+}
+
+/* Bigger pill on the projector. Shape and word carry over unchanged. */
+body[data-route="display"] .status {
+  font-size: clamp(22px, 3vw, 60px);
+  padding: 0.3em 0.8em;
+  border-width: 3px;
+}
+
+body[data-route="display"] .kv dt,
+body[data-route="display"] .kv dd {
+  font-size: clamp(16px, 1.8vw, 32px);
+  color: var(--proj-ink-dim);
+}
+
+body[data-route="display"] a { color: var(--proj-ink); }
+
+body[data-route="display"] .route-nav { display: none; }
+
+/* Reveal: a short fade only. DESIGN.md §8 — no spin, no bounce; motion on a
+   projector reads as lag, not polish. */
+body[data-route="display"] .reveal {
+  animation: display-fade 200ms ease-out both;
+}
+
+@keyframes display-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Accessibility preferences
+   -------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Windows High Contrast / forced-colors: let the OS win, but keep the pill
+   shape and word, which is exactly why they exist. */
+@media (forced-colors: active) {
+  .status { border: 2px solid CanvasText; }
+  .btn    { border: 2px solid ButtonText; }
+}
+
+@media print {
+  .route-nav, .banner { display: none; }
+  body { background: #FFFFFF; color: #000000; }
+  .panel { border: 0; }
+}
