@@ -184,6 +184,10 @@ body[data-route="display"] .display__link[data-state="stopped"] {
 
 body[data-route="display"] .display__stage {
   display: grid;
+  /* minmax(0,1fr), not the default `auto`: an auto-sized track is allowed to
+     grow past its container, and on this page that means the safe area. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
   align-items: center;
 }

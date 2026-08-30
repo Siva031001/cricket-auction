@@ -332,7 +332,13 @@ const Offline = {
   /** Guard against two overlapping replays. */
   _syncing: false,
 
-  /** @type {Object<string,string>} playerId -> object URL, so we revoke once */
+  /**
+   * playerId -> {url, tid}. Memoised so repeated reveals do not leak one blob
+   * URL per call. The tournament id is kept alongside so a scoped `getImage`
+   * cannot be short-circuited by the cache into returning another
+   * tournament's photograph.
+   * @type {Object<string,{url:string, tid:string}>}
+   */
   _urls: {},
 
   /* ================================================================== *
@@ -754,7 +760,15 @@ const Offline = {
   getImage: function (playerId, tournamentId) {
     const pid = String(playerId || '').trim();
     if (!pid) return Promise.resolve(null);
-    if (Offline._urls[pid]) return Promise.resolve(Offline._urls[pid]);
+    const scope = tournamentId ? String(tournamentId) : '';
+
+    const memo = Offline._urls[pid];
+    if (memo) {
+      // The scope check runs against the cache too, or the second caller for
+      // the same player id would get a photo the first caller was allowed and
+      // they are not.
+      return Promise.resolve((scope && memo.tid !== scope) ? null : memo.url);
+    }
 
     return Offline._backend().then(function (b) {
       if (b.kind !== 'idb') return null;
@@ -763,9 +777,9 @@ const Offline = {
       }).then(function (res) {
         const row = res[0];
         if (!row || !row.blob) return null;
-        if (tournamentId && row.tournament_id !== String(tournamentId)) return null;
+        if (scope && row.tournament_id !== scope) return null;
         const url = Offline._toObjectUrl(row.blob, row.mime);
-        if (url) Offline._urls[pid] = url;
+        if (url) Offline._urls[pid] = { url: url, tid: String(row.tournament_id || '') };
         return url;
       });
     }).catch(function () {
@@ -1871,9 +1885,9 @@ const Offline = {
     const g = Offline._global();
     const U = g.URL;
     const kill = function (pid) {
-      const url = Offline._urls[pid];
-      if (!url) return;
-      try { if (U && typeof U.revokeObjectURL === 'function') U.revokeObjectURL(url); }
+      const memo = Offline._urls[pid];
+      if (!memo) return;
+      try { if (U && typeof U.revokeObjectURL === 'function') U.revokeObjectURL(memo.url); }
       catch (e) { /* nothing useful */ }
       delete Offline._urls[pid];
     };

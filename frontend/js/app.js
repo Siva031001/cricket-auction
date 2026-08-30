@@ -63,6 +63,8 @@
  *   App.tournamentName(id)        -> the name if it is already known, else
  *                                    '' (the nav fills its own in async)
  *   App.setTournament(id, name)   -> remember a selection; does not navigate
+ *   App.changeTournament()        -> drop the selection and show the picker
+ *                                    for the screen you are on
  *   App.signOut()                 -> clears the token and returns to login
  *
  * app.js also refuses to render a tournament-scoped page with no selection:
@@ -125,13 +127,12 @@ const App = {
 
   /**
    * The three admin screens, in nav order.
-   * `scoped` marks the ones that cannot function without a tournament.
-   * @const {!Array<{key:string, label:string, path:string, scoped:boolean}>}
+   * @const {!Array<{key:string, label:string, path:string}>}
    */
   NAV_ITEMS: [
-    { key: 'dashboard', label: 'Tournaments', path: '/admin/dashboard', scoped: false },
-    { key: 'payments',  label: 'Payments',    path: '/admin/payments',  scoped: true },
-    { key: 'players',   label: 'Players',     path: '/admin/players',   scoped: true }
+    { key: 'dashboard', label: 'Tournaments', path: '/admin/dashboard' },
+    { key: 'payments',  label: 'Payments',    path: '/admin/payments' },
+    { key: 'players',   label: 'Players',     path: '/admin/players' }
   ],
 
   /**
@@ -314,11 +315,20 @@ const App = {
       // must not paint this route's nav over the new screen.
       const seq = App._routeSeq;
 
-      if (spec.navKey) App._navContext = { activeKey: spec.navKey, ctx: ctx };
+      if (spec.navKey) {
+        App._navContext = { activeKey: spec.navKey, ctx: ctx };
 
-      if (spec.tournament && !App.applyTournamentGuard(spec, ctx)) {
-        if (App._routeSeq === seq) App.syncChromeNav();
-        return;
+        // A scoped screen always needs a tournament; any admin screen needs
+        // one when the admin has just asked to change it.
+        if ((spec.tournament || App._forcePick) &&
+            !App.applyTournamentGuard(spec, ctx)) {
+          if (App._routeSeq === seq) App.syncChromeNav();
+          return;
+        }
+      } else {
+        // Landing on a screen with no nav ends any pending re-pick, so it
+        // cannot ambush the next admin screen the user opens.
+        App._forcePick = false;
       }
 
       const page = App.resolvePage(spec.global);
@@ -630,7 +640,8 @@ const App = {
    *
    * No selection in the URL, but one remembered from last time -> put it in
    * the URL (replace, so Back is not poisoned) and let the route re-resolve.
-   * Nothing remembered either -> the picker, which explains why.
+   * Nothing remembered, or the admin explicitly asked to change -> the
+   * picker, which explains why.
    *
    * @param {{path:string, title:string, routeKey:string}} spec
    * @param {Object} ctx
@@ -640,27 +651,48 @@ const App = {
     const chosen = App.currentTournamentId(ctx);
 
     if (chosen) {
+      App._forcePick = false;
       App._lastRestore = '';
       App.setTournament(chosen);
       return true;
     }
 
-    const remembered = App.rememberedTournamentId();
-    const stamp = spec.path + '|' + remembered;
+    if (!App._forcePick) {
+      const remembered = App.rememberedTournamentId();
+      const stamp = spec.path + '|' + remembered;
 
-    // The guard against a redirect loop: if putting the remembered id in the
-    // URL did not produce a URL with the id in it (a broken history API, a
-    // BASE_PATH mismatch), fall through to the picker instead of bouncing
-    // forever.
-    if (remembered && App._lastRestore !== stamp) {
-      App._lastRestore = stamp;
-      Router.navigate(App.adminPath(spec.path, remembered), { replace: true });
-      return false;
+      // The guard against a redirect loop: if putting the remembered id in
+      // the URL did not produce a URL with the id in it (a broken history
+      // API, a BASE_PATH mismatch), fall through to the picker instead of
+      // bouncing forever.
+      if (remembered && App._lastRestore !== stamp) {
+        App._lastRestore = stamp;
+        Router.navigate(App.adminPath(spec.path, remembered), { replace: true });
+        return false;
+      }
     }
 
+    App._forcePick = false;
     App._lastRestore = '';
     App.renderTournamentPicker(spec, ctx);
     return false;
+  },
+
+  /**
+   * "Change tournament". An action, not a link: it drops the selection and
+   * reloads the screen you are on without ?t=, which is what makes the
+   * picker appear. Doing it this way means the admin re-picks in the
+   * context of the screen they are actually working on, instead of being
+   * sent to another screen to hunt for a selector.
+   *
+   * @return {void}
+   */
+  changeTournament: function () {
+    App.forgetTournament();
+    App._lastRestore = '';
+    // The dashboard is happy with no selection, so it needs telling.
+    App._forcePick = true;
+    Router.navigate(Router.currentPath());
   },
 
   /**
@@ -685,6 +717,7 @@ const App = {
     App.forgetTournament();
     App._tournamentIndex = null;
     App._tournamentPromise = null;
+    App._forcePick = false;
     App.intendedPath = null;
 
     try {
@@ -847,11 +880,15 @@ const App = {
       scope.appendChild(idEl);
     }
 
-    scope.appendChild(App.link(
-      App.DASHBOARD_PATH,
-      id ? 'Change tournament' : 'Choose a tournament',
-      'btn btn--small btn--secondary admin-nav__change'
-    ));
+    // A button, not a link: changing tournament is an action (it drops the
+    // current selection), and a link would have to point at a screen that
+    // has no selector on it.
+    const change = document.createElement('button');
+    change.type = 'button';
+    change.className = 'btn btn--small btn--secondary admin-nav__change';
+    change.textContent = id ? 'Change tournament' : 'Choose a tournament';
+    change.addEventListener('click', function () { App.changeTournament(); });
+    scope.appendChild(change);
 
     if (id && !App.tournamentName(id)) App._resolveNavName(nav, scope, name, id);
 

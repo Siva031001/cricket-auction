@@ -731,6 +731,8 @@ const Payments = {
           prevStatus: prevStatus,
           noop: true,
           repaired: repaired,
+          // The admin who decided this the FIRST time, not the one clicking now.
+          decidedBy: Payments._str(payment.verified_by),
           verifiedAt: Payments._str(payment.verified_at),
           reason: Payments._str(payment.reject_reason)
         };
@@ -812,6 +814,7 @@ const Payments = {
         player: player,
         prevStatus: prevStatus,
         noop: false,
+        decidedBy: actor,
         repaired: false,
         reversedFrom: reversedFrom,
         verifiedAt: decidedAt,
@@ -842,10 +845,45 @@ const Payments = {
       out.rejected_at_display = Util.formatIST(outcome.verifiedAt, true);
       if (outcome.noop) out.alreadyRejected = true;
     }
+
+    // Who made the decision. On a no-op this is the ORIGINAL decider, not the
+    // admin who just clicked — that is the whole point of surfacing it. Two
+    // admins working the same 400-row queue will land on the same row, and
+    // "already verified by Priya at 3:42 PM" tells them what happened, while a
+    // bare "already verified" leaves them wondering if they misclicked.
+    // Resolved to a display name because a USR_ id means nothing on screen.
+    if (outcome.decidedBy) {
+      out.decided_by = outcome.decidedBy;
+      out.decided_by_name = Payments._displayName(outcome.decidedBy);
+    }
+
     if (outcome.reversedFrom) out.reversedFrom = outcome.reversedFrom;
     if (outcome.repaired) out.mirrorRepaired = true;
 
     return out;
+  },
+
+  /**
+   * Resolve a user id to a display name for the UI.
+   *
+   * Falls back to the id when the row is gone — a disabled or deleted organiser
+   * must not make a payment screen fail. Never returns the email: this string is
+   * rendered to another admin and the id is enough to trace in the audit log.
+   *
+   * @param {string} userId the actor id recorded on the payment
+   * @return {string} a human-readable name, or the id, or ''
+   */
+  _displayName(userId) {
+    const id = Payments._str(userId);
+    if (!id) return '';
+    try {
+      const tab = (typeof SHEETS !== 'undefined' && SHEETS.USERS) ? SHEETS.USERS : 'Users';
+      const row = Repo.findBy(tab, 'user_id', id);
+      const name = row ? Payments._str(row.display_name) : '';
+      return name || id;
+    } catch (e) {
+      return id;
+    }
   }
 };
 

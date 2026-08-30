@@ -1,0 +1,718 @@
+/* =============================================================================
+   organiser.css — the three Phase 3 screens, and nothing else:
+
+     body[data-route="organiser-join"]        js/pages/organiser-join.js
+     body[data-route="organiser-dashboard"]   js/pages/organiser-dashboard.js
+     body[data-route="admin-organisers"]      js/pages/admin-organisers.js
+
+   Owned by the Phase 3 organiser/teams agent. app.css is owned by the
+   integration agent and admin.css by the admin-pages agent; neither is edited
+   here. Every rule below is scoped to one of the three route values above, so
+   nothing in this file can change how any other screen looks.
+
+   Three rules shape all of it:
+
+     1. app.css OWNS THE TOKENS AND THE CONTROLS.
+        Colours come from the variables in app.css section 1. .panel, .btn,
+        .input, .field, .banner, .table, .table__wrap, .is-numeric, .empty,
+        .kv and .visually-hidden are reused exactly as they are. Nothing here
+        redefines a control — only its layout, and only on these routes.
+
+     2. THE VENUE, NOT THE DESIGN SYSTEM, SETS THE SIZES.
+        The organiser dashboard is driven on a laptop in a noisy hall while
+        people wait. So: a wide panel, large numbers, controls that stay at
+        least 48px (DESIGN.md §12/§49), and nothing under 1rem. The money
+        columns are tabular-nums, because a column of rupee figures that does
+        not line up is a column nobody checks.
+
+     3. COLOUR IS NEVER THE ONLY SIGNAL (DESIGN.md §8/§51).
+        "₹ per empty slot" going low is a word ("Low" / "Very low") plus a
+        border plus a colour. A disabled organiser is the word "Disabled"
+        first. Everything survives greyscale and a dim projector.
+
+   Contents
+     1. Shared chrome for all three routes
+     2. Join screen
+     3. Team dashboard: totals
+     4. Team dashboard: the team table and ₹-per-empty-slot
+     5. Team dashboard: editing a team
+     6. Team dashboard: creating teams (batch first)
+     7. Squad view
+     8. Admin organisers: the one-time join link
+     9. Admin organisers: create form and list
+    10. Print
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Shared chrome
+   -------------------------------------------------------------------- */
+
+/* app.css caps .panel at 34rem, which is right for a phone form and far too
+   narrow for a seven-column table of money. Widen it on these routes only. */
+body[data-route="organiser-dashboard"] .panel.org,
+body[data-route="admin-organisers"] .panel.org-admin {
+  max-width: 76rem;
+}
+
+body[data-route="organiser-join"] .panel.org-join {
+  max-width: 32rem;
+  margin-top: var(--space-6);
+}
+
+body[data-route="organiser-dashboard"] .org__head,
+body[data-route="admin-organisers"] .org__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+body[data-route="organiser-dashboard"] .org__head .panel__title,
+body[data-route="admin-organisers"] .org__head .panel__title {
+  margin-bottom: var(--space-1);
+}
+
+body[data-route="organiser-dashboard"] .org__head .panel__note,
+body[data-route="admin-organisers"] .org__head .panel__note {
+  margin-bottom: 0;
+}
+
+body[data-route="organiser-dashboard"] .org__actions,
+body[data-route="admin-organisers"] .org__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* app.css makes .btn full width, which is correct in a phone form and wrong
+   in a toolbar or a table cell. Shrink those to content and drop the stacked
+   margin the `.btn + .btn` rule adds. */
+body[data-route="organiser-dashboard"] .org__actions .btn,
+body[data-route="organiser-dashboard"] .org-teams__actions .btn,
+body[data-route="organiser-dashboard"] .org-edit__actions .btn,
+body[data-route="organiser-dashboard"] .org-batch__row .btn,
+body[data-route="organiser-dashboard"] .org-batch__add,
+body[data-route="admin-organisers"] .org__actions .btn,
+body[data-route="admin-organisers"] .org-list__actions .btn,
+body[data-route="admin-organisers"] .org-link__controls .btn,
+body[data-route="admin-organisers"] .org-link__dismiss {
+  width: auto;
+  margin-top: 0;
+}
+
+/* The live regions are empty until something happens; give them no space at
+   all until they have content, so the layout does not sit with two permanent
+   gaps under the heading. */
+body[data-route="organiser-join"] .org-join__errors:empty,
+body[data-route="organiser-dashboard"] .org__errors:empty,
+body[data-route="organiser-dashboard"] .org__notices:empty,
+body[data-route="organiser-dashboard"] .org-edit__errors:empty,
+body[data-route="organiser-dashboard"] .org-batch__errors:empty,
+body[data-route="organiser-dashboard"] .org-single__errors:empty,
+body[data-route="admin-organisers"] .org__errors:empty,
+body[data-route="admin-organisers"] .org__notices:empty,
+body[data-route="admin-organisers"] .org-new__errors:empty,
+body[data-route="admin-organisers"] .org-links:empty {
+  display: none;
+}
+
+body[data-route="organiser-join"] .org-join__errors,
+body[data-route="organiser-dashboard"] .org__errors,
+body[data-route="organiser-dashboard"] .org__notices,
+body[data-route="admin-organisers"] .org__errors,
+body[data-route="admin-organisers"] .org__notices,
+body[data-route="admin-organisers"] .org-links {
+  margin-bottom: var(--space-4);
+}
+
+body[data-route="organiser-dashboard"] .org__help-list {
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-dashboard"] .org__help-list li + li {
+  margin-top: var(--space-2);
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Join screen
+
+   One job: set a password. The rule is printed above the boxes, never after
+   a failed attempt, so it is a rule and not a trap.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-join"] .org-join__rules {
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--info-bg);
+}
+
+body[data-route="organiser-join"] .org-join__rules .panel__subtitle {
+  margin-top: 0;
+  margin-bottom: var(--space-2);
+}
+
+body[data-route="organiser-join"] .org-join__rules-list {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+body[data-route="organiser-join"] .org-join__rules-list li + li {
+  margin-top: var(--space-2);
+}
+
+/* The only action on the screen, so it stays full width — an unmissable
+   target on a laptop and on a phone. */
+body[data-route="organiser-join"] .org-join__submit {
+  margin-top: var(--space-5);
+}
+
+/* The dead-link answer. Bordered rather than coloured, because it is
+   instruction and not alarm — the alarm is the banner above it. */
+body[data-route="organiser-join"] .org-join__next {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="organiser-join"] .org-join__next .panel__subtitle {
+  margin-top: 0;
+}
+
+body[data-route="organiser-join"] .org-join__next-lead {
+  margin: 0 0 var(--space-3);
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+
+body[data-route="organiser-join"] .org-join__next-list {
+  margin: 0 0 var(--space-4);
+  padding-left: var(--space-5);
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-join"] .org-join__next-list li + li {
+  margin-top: var(--space-2);
+}
+
+body[data-route="organiser-join"] .org-join__next .btn {
+  width: auto;
+}
+
+
+/* -----------------------------------------------------------------------
+   3. Team dashboard: totals across all teams
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-dashboard"] .org-totals {
+  margin-bottom: var(--space-5);
+}
+
+body[data-route="organiser-dashboard"] .org-totals__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+body[data-route="organiser-dashboard"] .org-totals__item {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="organiser-dashboard"] .org-totals__label {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-dashboard"] .org-totals__value {
+  margin: var(--space-1) 0 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+  /* Money and counts must line up down the row. */
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* -----------------------------------------------------------------------
+   4. Team dashboard: the team table
+
+   Seven columns will not fit a phone. Scrolling sideways keeps every cell
+   readable; collapsing the table into stacked blocks loses the column
+   headers, which is what makes the numbers mean anything.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-dashboard"] .org-teams {
+  margin-bottom: var(--space-6);
+}
+
+body[data-route="organiser-dashboard"] .org-teams__table {
+  /* Never below 1rem: this is read at arm's length in a hall. */
+  font-size: 1rem;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__table td,
+body[data-route="organiser-dashboard"] .org-teams__table th {
+  vertical-align: top;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__table td.is-numeric,
+body[data-route="organiser-dashboard"] .org-teams__table th.is-numeric {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__name {
+  min-width: 11rem;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__name-text {
+  display: block;
+  font-size: 1.125rem;
+  font-weight: 700;
+  /* A team name is free text from a human. Let a long one wrap rather than
+     stretch the table off the screen. */
+  overflow-wrap: anywhere;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__owner {
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__players {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__slots {
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+/* ---- ₹ per empty slot -------------------------------------------------
+   The number that actually warns an organiser a team is in trouble
+   (DESIGN.md §6.5a), so it is the largest thing in the row. Low and very low
+   add a word and a left border, never colour on its own (§51). */
+
+body[data-route="organiser-dashboard"] .org-teams__slot {
+  min-width: 9rem;
+  border-left: 6px solid transparent;
+}
+
+body[data-route="organiser-dashboard"] .org-slot__value {
+  display: block;
+  font-size: 1.375rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="organiser-dashboard"] .org-slot__flag {
+  display: inline-block;
+  margin-top: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__slot--low {
+  border-left-color: var(--warning);
+  background: var(--warning-bg);
+}
+
+body[data-route="organiser-dashboard"] .org-teams__slot--low .org-slot__value,
+body[data-route="organiser-dashboard"] .org-teams__slot--low .org-slot__flag {
+  color: var(--warning);
+}
+
+body[data-route="organiser-dashboard"] .org-teams__slot--critical {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+body[data-route="organiser-dashboard"] .org-teams__slot--critical .org-slot__value,
+body[data-route="organiser-dashboard"] .org-teams__slot--critical .org-slot__flag {
+  color: var(--danger);
+}
+
+/* A full squad is the goal, not a warning: no colour, smaller type, and the
+   words "Squad full" instead of a rupee figure. */
+body[data-route="organiser-dashboard"] .org-teams__slot--full .org-slot__value {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-dashboard"] .org-teams__actions {
+  min-width: 13rem;
+}
+
+body[data-route="organiser-dashboard"] .org-teams__actions .btn {
+  margin: 0 var(--space-2) var(--space-2) 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   5. Team dashboard: the edit row
+
+   Purse and squad size stay changeable at any time (DESIGN.md §6.4), so this
+   form is always available and nothing in it is ever disabled. The server
+   refuses a change that would contradict existing data and says why; that
+   message lands in .org-edit__errors and on the field itself.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-dashboard"] .org-teams__editcell {
+  padding: var(--space-4);
+  background: var(--bg);
+}
+
+body[data-route="organiser-dashboard"] .org-edit__title {
+  margin: 0 0 var(--space-4);
+  font-size: 1.125rem;
+}
+
+body[data-route="organiser-dashboard"] .org-edit__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0 var(--space-4);
+}
+
+body[data-route="organiser-dashboard"] .org-edit__errors {
+  margin-bottom: var(--space-3);
+}
+
+body[data-route="organiser-dashboard"] .org-edit__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+
+/* -----------------------------------------------------------------------
+   6. Creating teams — batch first, one-at-a-time folded away
+
+   CONTRACTS-PHASE3 §5.3: eight teams is ONE request. The batch form is open
+   by default when no teams exist, which is the only time it matters.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-dashboard"] .org-create {
+  margin-top: var(--space-6);
+}
+
+body[data-route="organiser-dashboard"] .org-batch,
+body[data-route="organiser-dashboard"] .org-single {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* The main path gets the accent edge; the slow path does not. */
+body[data-route="organiser-dashboard"] .org-batch {
+  border-left: 6px solid var(--accent);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__summary,
+body[data-route="organiser-dashboard"] .org-single__summary {
+  /* A <summary> is the control that opens the block, so it obeys the same
+     48px rule as a button. */
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+body[data-route="organiser-dashboard"] .org-batch__summary {
+  font-size: 1.25rem;
+}
+
+body[data-route="organiser-dashboard"] .org-single__summary {
+  font-size: 1.0625rem;
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__shared,
+body[data-route="organiser-dashboard"] .org-single__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0 var(--space-4);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__names {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__row .field {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+
+/* The Remove button sits beside a 48px input, so it matches its height rather
+   than floating half way up the row. */
+body[data-route="organiser-dashboard"] .org-batch__remove {
+  flex: 0 0 auto;
+  min-height: var(--tap);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__count {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__add {
+  margin-bottom: var(--space-4);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__errors,
+body[data-route="organiser-dashboard"] .org-single__errors {
+  margin-bottom: var(--space-3);
+}
+
+body[data-route="organiser-dashboard"] .org-batch__submit .btn {
+  font-size: 1.125rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Squad view (DESIGN.md §31)
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-dashboard"] .org-squad__name {
+  margin-top: 0;
+}
+
+body[data-route="organiser-dashboard"] .org-squad__totals {
+  margin-bottom: var(--space-5);
+}
+
+body[data-route="organiser-dashboard"] .org-squad__table {
+  font-size: 1rem;
+}
+
+body[data-route="organiser-dashboard"] .org-squad__table td.is-numeric,
+body[data-route="organiser-dashboard"] .org-squad__table th.is-numeric {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Admin organisers: the one-time join link
+
+   The only thing on any screen in this app that cannot be recovered by
+   reloading, so it is impossible to scroll past: full accent border, the
+   warning above the link, and the URL in a monospace box.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-organisers"] .org-link {
+  padding: var(--space-4);
+  border: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--info-bg);
+}
+
+body[data-route="admin-organisers"] .org-link__title {
+  margin: 0 0 var(--space-3);
+  font-size: 1.375rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+body[data-route="admin-organisers"] .org-link__warn {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 1.0625rem;
+  font-weight: 700;
+}
+
+body[data-route="admin-organisers"] .org-link__warn-mark {
+  font-size: 1.125em;
+  line-height: 1;
+}
+
+body[data-route="admin-organisers"] .org-link__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+
+body[data-route="admin-organisers"] .org-link__url {
+  flex: 1 1 22rem;
+  /* Monospace, because this gets read character by character when a paste
+     goes wrong. */
+  font-family: var(--font-mono);
+  font-size: 1rem;
+}
+
+body[data-route="admin-organisers"] .org-link__note {
+  margin: var(--space-3) 0 0;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-organisers"] .org-link__dismiss {
+  margin-top: var(--space-4);
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Admin organisers: create form and list
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-organisers"] .org-new {
+  margin-bottom: var(--space-6);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="admin-organisers"] .org-new .panel__subtitle {
+  margin-top: 0;
+}
+
+body[data-route="admin-organisers"] .org-new__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0 var(--space-4);
+}
+
+body[data-route="admin-organisers"] .org-new__errors {
+  margin-bottom: var(--space-3);
+}
+
+body[data-route="admin-organisers"] .org-new__submit .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="admin-organisers"] .org-list__table {
+  font-size: 1rem;
+}
+
+body[data-route="admin-organisers"] .org-list__name {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+body[data-route="admin-organisers"] .org-list__actions {
+  min-width: 14rem;
+}
+
+body[data-route="admin-organisers"] .org-list__actions .btn {
+  margin: 0 var(--space-2) var(--space-2) 0;
+}
+
+body[data-route="admin-organisers"] .org-list__note {
+  color: var(--ink-muted);
+}
+
+/* A disabled organiser stays in the list because the audit trail references
+   them. Dimmed, but the word "Disabled" in the row is what says so. */
+body[data-route="admin-organisers"] .org-list__row--disabled .org-list__name {
+  color: var(--ink-muted);
+}
+
+/* ---- badges: word first, colour second (DESIGN.md §51) ---------------- */
+
+body[data-route="admin-organisers"] .org-badge {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+body[data-route="admin-organisers"] .org-badge--active {
+  border-color: var(--success);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+body[data-route="admin-organisers"] .org-badge--disabled {
+  border-color: var(--line-strong);
+  background: var(--bg);
+  color: var(--ink-muted);
+}
+
+/* "Not used yet" is the state an admin is asked about most often ("my link
+   does not work"), so it is the one that stands out. */
+body[data-route="admin-organisers"] .org-badge--pending {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+body[data-route="admin-organisers"] .org-badge--done {
+  border-color: var(--success);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Print
+
+   An organiser sometimes prints the team sheet before the auction. Drop the
+   controls and the forms; keep the numbers.
+   -------------------------------------------------------------------- */
+
+@media print {
+  body[data-route="organiser-dashboard"] .org__actions,
+  body[data-route="organiser-dashboard"] .org-teams__actions,
+  body[data-route="organiser-dashboard"] .org-teams__editrow,
+  body[data-route="organiser-dashboard"] .org-create,
+  body[data-route="admin-organisers"] .org__actions,
+  body[data-route="admin-organisers"] .org-new,
+  body[data-route="admin-organisers"] .org-list__actions,
+  /* Never print a live join link. Paper is not a secret. */
+  body[data-route="admin-organisers"] .org-links {
+    display: none;
+  }
+
+  body[data-route="organiser-dashboard"] .panel.org,
+  body[data-route="admin-organisers"] .panel.org-admin {
+    max-width: none;
+  }
+}
