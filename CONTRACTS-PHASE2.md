@@ -155,3 +155,50 @@ This trail is what settles a dispute about whether someone actually paid (`DESIG
 ## 5. Out of scope for Phase 2
 
 Teams, purse, the auction and reports. No bulk verify — "verify all pending" would defeat the entire point of a human checking each UPI reference against a bank statement. If it is ever requested, it needs a separate decision, not a convenience button.
+
+---
+
+## 6. Frontend (Phase 2)
+
+Two new routes, added to the Phase 0 router. Both are admin-only and sit behind the existing auth guard in `app.js`.
+
+| Route | Page module | File |
+|---|---|---|
+| `/admin/payments` | `AdminPaymentsPage` | `js/pages/admin-payments.js` |
+| `/admin/players` | `AdminPlayersPage` | `js/pages/admin-players.js` |
+
+Same conventions as Phase 1 (`CONTRACTS-PHASE1.md` §4): `{render(ctx)}`, `textContent` only, all traffic through `API`, no framework, no build step. Each page owns its own CSS file (`css/payments.css`, `css/players.css`); `admin.css` and `app.css` stay owned by the integration agent.
+
+### 6.1 Payment queue — `/admin/payments`
+
+The screen the tournament actually lives or dies on. An admin sits with a bank statement and works a queue of 400.
+
+Layout: a filter bar, a list, and a detail pane. On a phone the detail replaces the list.
+
+**Detail pane shows** (`DESIGN.md` §13): serial number, name, mobile, UPI reference, amount, submitted date, and the payment screenshot. Plus `[ VERIFY PAYMENT ]` and `[ REJECT PAYMENT ]`.
+
+Non-negotiable behaviours:
+
+1. **The UPI reference is the thing being compared.** Render it large, in a monospace font, with a Copy button. The admin is matching it character by character against a bank statement — small proportional text is how mistakes happen.
+2. **Load the screenshot only when a row is opened.** One `payment.getScreenshot` call per view. Never prefetch the queue — 400 base64 images would exhaust the browser and there is no batch endpoint by design.
+3. **The screenshot must be zoomable.** UPI reference numbers in a screenshot are often tiny. Click to open full-screen.
+4. **Reject requires a reason** before the button enables. The server enforces 3–200 chars; the form should not let it get that far.
+5. **Advance to the next pending item automatically** after a decision, and keep a running "42 of 400 remaining" from the `counts` object. This is a repetitive job; every saved click is worth real time across 400 players.
+6. **Show `possible_duplicate_of` prominently** when set, worded as a question, not an accusation: *"Serial #88 has the same name. Check before verifying."*
+7. **Undo is not a feature.** A decision is reversible by verifying or rejecting again, which the backend records as a reversal. Do not build a separate undo button that hides what happened.
+8. Keyboard shortcuts for the repetitive path: `V` verify, `R` reject, `J`/`K` or arrows to move. Show them; do not hide them behind a help modal.
+
+### 6.2 Player list — `/admin/players`
+
+The general register (`DESIGN.md` §11). Columns: Serial No, Name, DOB, Role, Style, Mobile, UPI Reference, Payment Status, Registration Date, Auction Status.
+
+1. Server-side paging via `player.list` — 50 per page. Never fetch all 400 and page in the browser.
+2. Filters for payment status, auction status and withdrawn; a search box covering serial, name, mobile and UPI reference.
+3. Status shown with a word and a shape, never colour alone (`DESIGN.md` §8 status colours).
+4. A withdraw action per row, with a confirmation naming the player and stating that the serial number stays reserved and is never reused.
+5. The header carries the `counts` summary: total, pending, verified, rejected, eligible.
+6. Debounce the search by ~300 ms. Each keystroke is a full sheet read on the server.
+
+### 6.3 Admin navigation
+
+The admin now has three screens (tournaments, payments, players). The integration agent adds a shared nav to `app.css` / `app.js`. It must show which tournament is selected — every Phase 2 action is tournament-scoped, and an admin verifying payments against the wrong tournament is a real and unrecoverable mistake.

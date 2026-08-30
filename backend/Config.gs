@@ -44,9 +44,13 @@ const HEADERS = Object.freeze({
     'default_max_players', 'display_token', 'created_at', 'created_by'
   ]),
 
+  // The last three columns carry the one-time organiser join link
+  // (CONTRACTS-PHASE3.md §1). join_token_hash is a SHA-256 digest, never the
+  // token itself, so a leaked copy of this sheet contains nothing usable.
   [SHEETS.USERS]: Object.freeze([
     'user_id', 'email', 'display_name', 'password_hash', 'salt', 'role',
-    'tournament_id', 'status', 'created_at', 'created_by', 'last_login_at'
+    'tournament_id', 'status', 'created_at', 'created_by', 'last_login_at',
+    'join_token_hash', 'join_expires_at', 'join_used_at'
   ]),
 
   [SHEETS.PLAYERS]: Object.freeze([

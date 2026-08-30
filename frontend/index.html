@@ -49,14 +49,17 @@
 
 <!--
   Stylesheets, in cascade order. app.css owns the tokens, the mobile-first
-  base and the projector theme, plus every shared component class; the two
-  page stylesheets may only override, never redefine (CONTRACTS-PHASE1.md §4).
+  base, the shared admin nav and the projector theme, plus every shared
+  component class; the page stylesheets may only override, never redefine
+  (CONTRACTS-PHASE1.md §4, CONTRACTS-PHASE2.md §6).
   A page stylesheet that has not been written yet simply 404s: the app still
   renders, it just loses that page's cosmetic layer.
 -->
 <link rel="stylesheet" href="css/app.css">
 <link rel="stylesheet" href="css/register.css">
 <link rel="stylesheet" href="css/admin.css">
+<link rel="stylesheet" href="css/payments.css">
+<link rel="stylesheet" href="css/players.css">
 </head>
 <body data-route="boot">
 
@@ -95,7 +98,17 @@
       7. pages/admin-login.js    AdminLoginPage  uses API, UI, Router
       8. pages/admin-tournament.js AdminTournamentPage
                                                  uses API, UI, ImageTool, Router
-      9. app.js                  App             uses all of the above; LAST
+      9. pages/admin-payments.js AdminPaymentsPage
+                                                 uses API, UI, Router, App
+     10. pages/admin-players.js  AdminPlayersPage
+                                                 uses API, UI, Router, App
+     11. app.js                  App             uses all of the above; LAST
+
+    The Phase 2 pages sit ABOVE app.js like every other page: they only
+    reference App from inside render(), which cannot run before app.js has
+    loaded and the router has dispatched. Loading them after app.js would
+    work too, but would break the "page files, then the shell" rule that
+    makes this list readable.
 
     A page file that fails to load does NOT break the app. app.js looks its
     global up by name at render time and shows a readable "screen failed to
@@ -111,6 +124,8 @@
   <script defer src="js/pages/register.js"></script>
   <script defer src="js/pages/admin-login.js"></script>
   <script defer src="js/pages/admin-tournament.js"></script>
+  <script defer src="js/pages/admin-payments.js"></script>
+  <script defer src="js/pages/admin-players.js"></script>
   <script defer src="js/app.js"></script>
 </body>
 </html>

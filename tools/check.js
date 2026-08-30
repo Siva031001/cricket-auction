@@ -210,7 +210,14 @@ function checkRoutes(ctx) {
   // adding a public action should be a deliberate act that fails this check first.
   const EXPECTED_PUBLIC = [
     'system.ping', 'auth.login',
-    'tournament.getPublic', 'player.register', 'player.checkMobile'
+    // The organiser has no account yet, so there is no session token to send;
+    // the one-time join token in the payload is the credential (PHASE3 §1).
+    'auth.organiserJoin',
+    'tournament.getPublic', 'player.register', 'player.checkMobile',
+    // The projector runs unattended on a venue laptop with no operator signed
+    // in. Its credential is the tournament's display_token in the query string
+    // (PHASE4-7 §4.2). Read-only: it exposes no controls and no personal data.
+    'auction.displayState'
   ].sort();
   const actualPublic = names.filter((n) => routes[n] && routes[n].auth === 'PUBLIC').sort();
   const unexpected = actualPublic.filter((n) => !EXPECTED_PUBLIC.includes(n));

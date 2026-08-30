@@ -12,13 +12,12 @@
  *   tournament.setStatus   ADMIN. DRAFT | REG_OPEN | REG_CLOSED | AUCTION_LIVE |
  *                          AUCTION_CLOSED. Also how registration gets closed.
  *
- * PHASE 3 — organiser access (DESIGN.md §5.4)
- *   organiser.create       ADMIN. Issues the one-time join link.
- *   organiser.list         ADMIN.
- *   organiser.disable      ADMIN.
- *   NOTE: DESIGN.md §4.1 groups organiser.* under "Admin" without naming a file.
- *   They live here because an organiser is scoped to exactly one tournament.
- *   The matching auth.organiserLink route stays in AuthRoutes() in Code.gs.
+ * PHASE 3 — organiser access: MOVED OUT of this file.
+ *   organiser.create / list / resendLink / disable now live in Organisers.gs,
+ *   and auth.organiserJoin is in AuthRoutes() in Code.gs.
+ *   They were pencilled in here during Phase 0. This file passed 1100 lines and
+ *   an organiser is a separate concern from a tournament, so they moved
+ *   (CONTRACTS-PHASE3.md §1). Nothing organiser-related belongs here.
  *
  * Two things in this file are security boundaries rather than preferences:
  *

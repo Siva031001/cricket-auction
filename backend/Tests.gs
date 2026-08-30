@@ -37,6 +37,20 @@ const TEST_FIXTURES = Object.freeze({
   ACTOR: 'USR_zztest000000',
   /** Passwords must be >= 10 chars (CONTRACTS.md §7); this one is 16. */
   PASSWORD: 'TestPassw0rd!234',
+  /**
+   * Marker for a photo_file_id / screenshot_file_id that was written straight
+   * onto a fixture row and never uploaded anywhere.
+   *
+   * The Phase 2 suites seed hundreds of Players and Payments rows directly,
+   * because uploading a real image for each one would take minutes and prove
+   * nothing about paging or filtering. Those rows still need a NON-BLANK file id:
+   * the whole point of the "screenshot_file_id never leaves the server" tests is
+   * to search the serialised response for the literal value, and searching for ''
+   * would pass against anything. The prefix lets T.trackDrive tell a placeholder
+   * from a real Drive id and skip it, so cleanup does not log a warning per row
+   * for files that never existed.
+   */
+  FAKE_DRIVE_PREFIX: 'zzfakedrive_',
   /** Pepper used for the Util.hashPassword tests. Not the real server pepper. */
   PEPPER: 'zz-test-pepper-not-the-real-one'
 });
@@ -115,6 +129,10 @@ const T = {
    */
   trackDrive(id, kind) {
     if (!id || typeof id !== 'string') return;
+    // A placeholder id from a seeded row was never uploaded, so there is nothing
+    // in Drive to trash and DriveApp would only raise a "file not found" that
+    // cleanup would then log once per fixture row.
+    if (id.indexOf(TEST_FIXTURES.FAKE_DRIVE_PREFIX) === 0) return;
     for (let i = 0; i < T._state.driveIds.length; i++) {
       if (T._state.driveIds[i].id === id) return;
     }
@@ -714,6 +732,8 @@ const Suites = {
     Suites.ist();
     Suites.tournament();
     Suites.registration();
+    Suites.playerList();
+    Suites.paymentVerify();
     Suites.repo();
     Suites.auth();
     Suites.cache();
@@ -722,7 +742,8 @@ const Suites = {
 
   /** @return {!Array<string>} the names, for the "unknown suite" error message. */
   names() {
-    return ['Util', 'IST', 'Tournament', 'Registration', 'Repo', 'Auth', 'Cache', 'Drive'];
+    return ['Util', 'IST', 'Tournament', 'Registration', 'PlayerList', 'PaymentVerify',
+      'Repo', 'Auth', 'Cache', 'Drive'];
   },
 
   // ===========================================================================
@@ -1969,6 +1990,1601 @@ const Suites = {
   },
 
   // ===========================================================================
+  // PlayerList — CONTRACTS-PHASE2.md §1 (player.list, player.setWithdrawn),
+  // §2 (the eligibility predicate) and §3 (counts).
+  // Rationale: DESIGN.md §11, §14, §15 case 16, §39.
+  //
+  // The general register the admin works from. The two failures that matter here
+  // do not announce themselves:
+  //   - a paging or sort mistake makes a row appear twice or vanish, and nobody
+  //     finds out until a player says they were never called;
+  //   - a screenshot_file_id in a bulk row hands out an unauthenticated link to
+  //     somebody's bank payment proof (DESIGN.md §16 risk 1).
+  //
+  // Rows are seeded straight onto the sheet rather than registered through
+  // player.register. 55 registrations would mean 165 Drive uploads and several
+  // minutes, and would prove nothing about paging; registration itself is
+  // covered by the Registration suite. Everything still goes through
+  // buildRoutes() on the way in — the action names are the contract, the
+  // internal function names are not.
+  // ===========================================================================
+
+  playerList() {
+    T.suite('PlayerList', function () {
+      const PS = ENUM.PAYMENT_STATUS;
+      const AS = ENUM.AUCTION_STATUS;
+      const admin = Suites._adminSession('pladm');
+
+      // Fixtures are built lazily and memoised, so a broken one fails the tests
+      // that need it rather than aborting the whole suite body.
+      const fx = {};
+
+      /**
+       * Eight players with a deliberate spread of statuses. Names, serials and
+       * registration instants are all in DIFFERENT orders on purpose: if they
+       * agreed, a "sort by name" test would pass against code that sorted by
+       * serial and never noticed.
+       *
+       *   serial  name             payment   auction   withdrawn  registered
+       *     1     ZZ Hotel Hari    VERIFIED  PENDING   no         8 Aug
+       *     2     ZZ Bravo Bala    PENDING   PENDING   no         6 Aug
+       *     3     ZZ Foxtrot ...   REJECTED  PENDING   no         4 Aug
+       *     4     ZZ Alpha Anand   VERIFIED  SOLD      no         2 Aug
+       *     5     ZZ Golf Ganesh   VERIFIED  UNSOLD    YES        7 Aug
+       *     6     ZZ Charlie ...   PENDING   PENDING   YES        5 Aug
+       *     7     ZZ Echo Elango   VERIFIED  PENDING   no         3 Aug
+       *     8     ZZ Delta Dinesh  REJECTED  PENDING   YES        1 Aug
+       *
+       * counts: all 8, pending 2, verified 4, rejected 2, withdrawn 3,
+       *         eligible 3 (serials 1, 4 and 7).
+       */
+      function main() {
+        if (!fx.main) {
+          const t = Suites._seedTournament('pllist', { withFolders: false });
+          const roster = Suites._seedRoster(t.tid, [
+            { serial_no: 1, name: 'ZZ Hotel Hari', payment_status: PS.VERIFIED,
+              registered_at: '2026-08-08T06:00:00.000Z' },
+            { serial_no: 2, name: 'ZZ Bravo Bala', payment_status: PS.PENDING,
+              registered_at: '2026-08-06T06:00:00.000Z' },
+            { serial_no: 3, name: 'ZZ Foxtrot Farook', payment_status: PS.REJECTED,
+              registered_at: '2026-08-04T06:00:00.000Z' },
+            { serial_no: 4, name: 'ZZ Alpha Anand', payment_status: PS.VERIFIED,
+              auction_status: AS.SOLD, team_id: 'TEM_zztestteam1', sold_amount: 40000,
+              registered_at: '2026-08-02T06:00:00.000Z' },
+            { serial_no: 5, name: 'ZZ Golf Ganesh', payment_status: PS.VERIFIED,
+              auction_status: AS.UNSOLD, is_withdrawn: true,
+              registered_at: '2026-08-07T06:00:00.000Z' },
+            { serial_no: 6, name: 'ZZ Charlie Chandran', payment_status: PS.PENDING,
+              is_withdrawn: true, registered_at: '2026-08-05T06:00:00.000Z' },
+            { serial_no: 7, name: 'ZZ Echo Elango', payment_status: PS.VERIFIED,
+              registered_at: '2026-08-03T06:00:00.000Z' },
+            { serial_no: 8, name: 'ZZ Delta Dinesh', payment_status: PS.REJECTED,
+              is_withdrawn: true, registered_at: '2026-08-01T06:00:00.000Z' }
+          ]);
+          fx.main = { tid: t.tid, players: roster.players, payments: roster.payments };
+        }
+        return fx.main;
+      }
+
+      /** 55 players, so the default page of 50 has a real second page behind it. */
+      function paged() {
+        if (!fx.paged) {
+          const t = Suites._seedTournament('plpage', { withFolders: false });
+          const specs = [];
+          for (let i = 1; i <= 55; i++) {
+            specs.push({
+              serial_no: i,
+              name: 'ZZ Page Player ' + Suites._seqLetters(),
+              payment_status: PS.VERIFIED
+            });
+          }
+          Suites._seedRoster(t.tid, specs);
+          fx.paged = { tid: t.tid, total: 55 };
+        }
+        return fx.paged;
+      }
+
+      /**
+       * Three players whose mobiles, serials and UPI references are PINNED
+       * rather than generated. Every search assertion below is an exact set, and
+       * a generated 10-digit mobile could happen to contain the serial number
+       * another case searches for and turn a green test amber at random.
+       */
+      function searchable() {
+        if (!fx.search) {
+          const t = Suites._seedTournament('plsrch', { withFolders: false });
+          Suites._seedRoster(t.tid, [
+            { serial_no: 101, name: 'ZZ Alpha Nair', mobile: '9800000001',
+              upi_ref: 'ZZSEARCHALPHA' },
+            { serial_no: 202, name: 'ZZ Bravo Kumar', mobile: '9700000002',
+              upi_ref: 'ZZSEARCHBRAVO' },
+            { serial_no: 303, name: 'ZZ Charlie Das', mobile: '9600000003',
+              upi_ref: 'ZZSEARCHCHARLIE' }
+          ]);
+          fx.search = { tid: t.tid };
+        }
+        return fx.search;
+      }
+
+      /** A second tournament, to prove nothing leaks across the boundary. */
+      function other() {
+        if (!fx.other) {
+          const t = Suites._seedTournament('plothr', { withFolders: false });
+          const roster = Suites._seedRoster(t.tid, [
+            { serial_no: 1, name: 'ZZ Other One', payment_status: PS.VERIFIED },
+            { serial_no: 2, name: 'ZZ Other Two', payment_status: PS.PENDING }
+          ]);
+          fx.other = { tid: t.tid, players: roster.players };
+        }
+        return fx.other;
+      }
+
+      /** Three players for the withdrawal tests, one of them already SOLD. */
+      function withdrawable() {
+        if (!fx.wd) {
+          const t = Suites._seedTournament('plwdrw', { withFolders: false });
+          const roster = Suites._seedRoster(t.tid, [
+            { serial_no: 1, name: 'ZZ Withdraw Me', payment_status: PS.VERIFIED },
+            { serial_no: 2, name: 'ZZ Sold Player', payment_status: PS.VERIFIED,
+              auction_status: AS.SOLD, team_id: 'TEM_zztestteam2', sold_amount: 40000 },
+            { serial_no: 3, name: 'ZZ Audit Me', payment_status: PS.VERIFIED }
+          ]);
+          fx.wd = { tid: t.tid, players: roster.players };
+        }
+        return fx.wd;
+      }
+
+      /** Serial numbers of a list response, in the order they came back. */
+      function serials(res) {
+        return res.rows.map(r => r.serial_no);
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('player.list and player.setWithdrawn are registered with the right exposure',
+        function () {
+          const list = Suites._route('player.list');
+          T.assert(list.methods.indexOf('POST') !== -1, 'player.list must accept POST');
+          T.assert(list.methods.indexOf('GET') === -1,
+            'a GET route carries no token in the body (CONTRACTS.md §11), so the whole ' +
+            'register would sit behind a link anyone could paste');
+          T.assert(list.auth !== 'PUBLIC',
+            'player.list is the admin register — DESIGN.md §16 risk 4 is exactly this ' +
+            'list being reachable anonymously');
+          T.assert(Suites._authAllows(list.auth, ENUM.USER_ROLE.ADMIN),
+            'player.list must allow ADMIN, got auth = ' + T._fmt(list.auth));
+          T.assert(Suites._authAllows(list.auth, ENUM.USER_ROLE.ORGANISER),
+            'CONTRACTS-PHASE2 §1 allows an ORGANISER their OWN tournament, so the role ' +
+            'check lets them in and Auth.requireTournament is what scopes them');
+
+          const wd = Suites._route('player.setWithdrawn');
+          T.assert(wd.methods.indexOf('POST') !== -1, 'player.setWithdrawn must accept POST');
+          T.assert(wd.methods.indexOf('GET') === -1,
+            'setWithdrawn writes; a GET route would let a link take a player out of the ' +
+            'tournament');
+          T.assert(Suites._authAllows(wd.auth, ENUM.USER_ROLE.ADMIN),
+            'player.setWithdrawn must allow ADMIN, got auth = ' + T._fmt(wd.auth));
+          T.assert(!Suites._authAllows(wd.auth, ENUM.USER_ROLE.ORGANISER),
+            'CONTRACTS-PHASE2 §1 marks setWithdrawn ADMIN only. An organiser runs the ' +
+            'auction; deciding a paid-up player is out of the tournament is not theirs ' +
+            'to do. Got auth = ' + T._fmt(wd.auth));
+        });
+
+      // -----------------------------------------------------------------------
+      // Paging — DESIGN.md §14 ("paginate the admin player list, 50/page")
+      // -----------------------------------------------------------------------
+
+      T.test('paging: 50 rows by default, and the last page is the partial one',
+        function () {
+          const t = paged();
+          const first = Suites._call('player.list', { tournamentId: t.tid }, admin);
+
+          T.assertEqual(first.pageSize, 50,
+            'CONTRACTS-PHASE2 §1 and DESIGN.md §14 both pin the default at 50');
+          T.assertEqual(first.page, 1, 'paging is 1-based and defaults to the first page');
+          T.assertEqual(first.rows.length, 50, 'a full first page');
+          T.assertEqual(first.total, 55, 'total is the size of the filtered result set');
+          T.assertEqual(first.totalPages, 2, 'ceil(55 / 50)');
+          T.assertEqual(first.rows[0].serial_no, 1,
+            'the default sort is serial_no ascending (CONTRACTS-PHASE2 §1)');
+          T.assertEqual(first.rows[49].serial_no, 50, 'and it runs to 50 on page 1');
+
+          const second = Suites._call('player.list', { tournamentId: t.tid, page: 2 }, admin);
+          T.assertEqual(second.page, 2, 'the requested page is echoed');
+          T.assertEqual(second.rows.length, 5, 'the last page holds the remaining 5 of 55');
+          T.assertEqual(serials(second), [51, 52, 53, 54, 55],
+            'and it carries on exactly where page 1 stopped');
+          T.assertEqual(second.total, 55, 'total does not change with the page');
+          T.assertEqual(second.totalPages, 2, 'nor does totalPages');
+
+          // THE POINT OF A TOTAL ORDER. Two pages of a list sorted on a key with
+          // ties can show one row twice and skip another entirely, and nothing
+          // errors — the player just never gets called.
+          const seen = {};
+          first.rows.concat(second.rows).forEach(r => {
+            seen[r.serial_no] = (seen[r.serial_no] || 0) + 1;
+          });
+          T.assertEqual(Object.keys(seen).length, 55,
+            'the two pages together must cover all 55 players exactly once');
+          Object.keys(seen).forEach(k => {
+            T.assertEqual(seen[k], 1, 'serial ' + k + ' appears ' + seen[k] + ' times across ' +
+              'the two pages — a row shown twice means another one was skipped');
+          });
+        });
+
+      T.test('a page past the end returns empty rows with the real totals, not an error',
+        function () {
+          // The admin may be on page 8 when a filter change shrinks the result to
+          // two pages, or holding a bookmark from yesterday. An error there is a
+          // dead end; empty rows plus the correct totals let the screen move
+          // itself to a page that exists.
+          const t = paged();
+          let out = null;
+          let threw = null;
+          try {
+            out = Suites._call('player.list', { tournamentId: t.tid, page: 9 }, admin);
+          } catch (e) {
+            threw = e;
+          }
+          T.assert(threw === null,
+            'an out-of-range page must not throw, got ' + T._errText(threw));
+          T.assertEqual(out.rows, [], 'there is nothing on page 9');
+          T.assertEqual(out.page, 9, 'the requested page is echoed back');
+          T.assertEqual(out.total, 55, 'the real total still comes back');
+          T.assertEqual(out.totalPages, 2, 'and the real page count, so the UI can recover');
+          T.assertEqual(out.counts.all, 55, 'and the counts are unaffected');
+        });
+
+      T.test('pageSize is capped at 200', function () {
+        // CONTRACTS-PHASE2 §1: "pageSize: 50, max 200". One call must not be able
+        // to ask for the whole sheet.
+        const t = paged();
+        const huge = Suites._call('player.list',
+          { tournamentId: t.tid, pageSize: 5000 }, admin);
+        T.assertEqual(huge.pageSize, 200,
+          'a request for 5000 rows must be clamped to 200, not honoured');
+        T.assertEqual(huge.rows.length, 55, 'only 55 players exist, so 55 come back');
+        T.assertEqual(huge.totalPages, 1, 'ceil(55 / 200)');
+
+        const exact = Suites._call('player.list',
+          { tournamentId: t.tid, pageSize: 200 }, admin);
+        T.assertEqual(exact.pageSize, 200, '200 itself is allowed — the cap is inclusive');
+
+        const small = Suites._call('player.list',
+          { tournamentId: t.tid, pageSize: 10, page: 6 }, admin);
+        T.assertEqual(small.pageSize, 10, 'a smaller page size is honoured as asked');
+        T.assertEqual(small.rows.length, 5, 'page 6 of 55 at 10 per page holds 5');
+        T.assertEqual(small.totalPages, 6, 'ceil(55 / 10)');
+      });
+
+      // -----------------------------------------------------------------------
+      // Filters
+      // -----------------------------------------------------------------------
+
+      T.test('each filter narrows the list, and two filters are AND-ed', function () {
+        const t = main();
+        const q = (filter) => Suites._call('player.list',
+          { tournamentId: t.tid, pageSize: 200, filter: filter }, admin);
+
+        T.assertEqual(serials(q({})), [1, 2, 3, 4, 5, 6, 7, 8],
+          'no filter means every player in the tournament');
+
+        // paymentStatus
+        T.assertEqual(serials(q({ paymentStatus: PS.VERIFIED })), [1, 4, 5, 7], 'VERIFIED only');
+        T.assertEqual(serials(q({ paymentStatus: PS.PENDING })), [2, 6], 'PENDING only');
+        T.assertEqual(serials(q({ paymentStatus: PS.REJECTED })), [3, 8], 'REJECTED only');
+
+        // auctionStatus
+        T.assertEqual(serials(q({ auctionStatus: AS.SOLD })), [4], 'SOLD only');
+        T.assertEqual(serials(q({ auctionStatus: AS.UNSOLD })), [5], 'UNSOLD only');
+        T.assertEqual(serials(q({ auctionStatus: AS.PENDING })), [1, 2, 3, 6, 7, 8],
+          'still to be auctioned');
+
+        // withdrawn — omitted means BOTH, which is not the same as false
+        T.assertEqual(serials(q({ withdrawn: true })), [5, 6, 8], 'the ones who pulled out');
+        T.assertEqual(serials(q({ withdrawn: false })), [1, 2, 3, 4, 7], 'and the ones who did not');
+        T.assertEqual(serials(q({})).length, 8,
+          'omitting the withdrawn filter must mean "both", not "false" — otherwise a ' +
+          'withdrawn player disappears from the register entirely');
+
+        // AND-ed. This particular pair is the auction pool (CONTRACTS-PHASE2 §2).
+        T.assertEqual(serials(q({ paymentStatus: PS.VERIFIED, withdrawn: false })), [1, 4, 7],
+          'VERIFIED and not withdrawn must be AND-ed, not OR-ed. OR would return all ' +
+          'eight and put a rejected player in front of the auctioneer.');
+        T.assertEqual(serials(q({ paymentStatus: PS.VERIFIED, auctionStatus: AS.SOLD })), [4],
+          'a second AND-ed pair');
+        T.assertEqual(serials(q({ paymentStatus: PS.REJECTED, auctionStatus: AS.SOLD })), [],
+          'a pair that matches nobody returns an empty list, not everybody');
+
+        // A value outside the enum is a typo, and a typo must not silently widen
+        // the list back out to everyone.
+        T.assertThrows(() => q({ paymentStatus: 'PAID' }), ERR.VALIDATION_FAILED,
+          '"PAID" is not one of the three payment statuses');
+        T.assertThrows(() => q({ auctionStatus: 'BOUGHT' }), ERR.VALIDATION_FAILED,
+          '"BOUGHT" is not one of the three auction statuses');
+      });
+
+      T.test('search matches serial_no, name, mobile and upi_ref, case-insensitively',
+        function () {
+          const t = searchable();
+          const q = (needle) => Suites._call('player.list',
+            { tournamentId: t.tid, pageSize: 200, filter: { search: needle } }, admin);
+
+          T.assertEqual(serials(q('101')), [101],
+            'a serial number typed into the search box must find that player');
+          T.assertEqual(serials(q('ALPHA NAIR')), [101],
+            'an upper-case query must match a mixed-case name — the admin types from a ' +
+            'phone screen, not from the sheet');
+          T.assertEqual(serials(q('alpha nair')), [101], 'and the lower-case form too');
+          T.assertEqual(serials(q('9700000002')), [202],
+            'a mobile number is the other thing an admin has to hand');
+          T.assertEqual(serials(q('zzsearchcharlie')), [303],
+            'a lower-case query must match the upper-case UPI reference stored on the ' +
+            'Payments row — matching the bank statement is the whole job (DESIGN.md §12)');
+          T.assertEqual(serials(q('ZZSEARCHCHARLIE')), [303], 'and the upper-case form');
+
+          T.assertEqual(serials(q('zz ')), [101, 202, 303],
+            'a substring shared by all three finds all three');
+          T.assertEqual(serials(q('kumar')), [202],
+            'a partial name is enough — the admin usually has part of a word, not all of it');
+          T.assertEqual(serials(q('nobodyhasthisname')), [],
+            'a search that matches nobody returns an empty list, not everybody');
+
+          const none = Suites._call('player.list',
+            { tournamentId: t.tid, filter: { search: '   ' } }, admin);
+          T.assertEqual(none.total, 3,
+            'a blank search is no search at all, not a search for the empty string');
+        });
+
+      // -----------------------------------------------------------------------
+      // Sorting
+      // -----------------------------------------------------------------------
+
+      T.test('each of the four sort keys orders the page', function () {
+        const t = main();
+        const q = (sort) => Suites._call('player.list',
+          { tournamentId: t.tid, pageSize: 200, sort: sort }, admin);
+
+        T.assertEqual(serials(q('serial_no')), [1, 2, 3, 4, 5, 6, 7, 8], 'serial_no ascending');
+
+        // Alphabetical by name: Alpha(4) Bravo(2) Charlie(6) Delta(8) Echo(7)
+        // Foxtrot(3) Golf(5) Hotel(1).
+        T.assertEqual(serials(q('name')), [4, 2, 6, 8, 7, 3, 5, 1],
+          'name ascending, case-folded');
+
+        // Oldest registration first: 1 Aug(8) 2 Aug(4) 3 Aug(7) 4 Aug(3)
+        // 5 Aug(6) 6 Aug(2) 7 Aug(5) 8 Aug(1).
+        T.assertEqual(serials(q('registered_at')), [8, 4, 7, 3, 6, 2, 5, 1],
+          'registered_at ascending, oldest first');
+
+        // PENDING < REJECTED < VERIFIED alphabetically, with serial_no breaking
+        // the ties inside each group.
+        T.assertEqual(serials(q('payment_status')), [2, 6, 3, 8, 1, 4, 5, 7],
+          'payment_status ascending, ties broken by serial_no');
+
+        // Every sort must be a TOTAL order. If it is not, two rows with the same
+        // key can swap places between one page and the next, and the same player
+        // is shown twice while another is never shown at all.
+        ['serial_no', 'name', 'registered_at', 'payment_status'].forEach(sort => {
+          const p1 = Suites._call('player.list',
+            { tournamentId: t.tid, pageSize: 3, page: 1, sort: sort }, admin);
+          const p2 = Suites._call('player.list',
+            { tournamentId: t.tid, pageSize: 3, page: 2, sort: sort }, admin);
+          const p3 = Suites._call('player.list',
+            { tournamentId: t.tid, pageSize: 3, page: 3, sort: sort }, admin);
+          T.assertEqual(serials(p1).concat(serials(p2), serials(p3)), serials(q(sort)),
+            'sorted by ' + sort + ', three pages of 3 must reassemble into exactly the ' +
+            'same order as one page of 8');
+        });
+      });
+
+      T.test('an invalid sort key is rejected, not silently ignored', function () {
+        // A typo that quietly falls back to a different order is worse than an
+        // error: the pages are then cut from an order the caller did not ask for,
+        // and rows appear twice or vanish with nothing on screen to say why.
+        const t = main();
+        ['serial-no', 'seral_no', 'sold_amount', 'mobile', 'name desc', '1', 'true']
+          .forEach(bad => {
+            const e = T.assertThrows(() => Suites._call('player.list',
+              { tournamentId: t.tid, sort: bad }, admin),
+              ERR.VALIDATION_FAILED, '"' + bad + '" is not one of the four sort keys');
+            T.assert(String(e.message).indexOf('serial_no') !== -1,
+              'the message must list the keys that ARE allowed, got "' + e.message + '"');
+          });
+
+        // A blank sort is not a typo — it means "use the default".
+        const blank = Suites._call('player.list', { tournamentId: t.tid, sort: '' }, admin);
+        T.assertEqual(serials(blank), [1, 2, 3, 4, 5, 6, 7, 8],
+          'an omitted sort falls back to serial_no, which is the documented default');
+      });
+
+      // -----------------------------------------------------------------------
+      // Counts — CONTRACTS-PHASE2 §3
+      // -----------------------------------------------------------------------
+
+      T.test('counts cover the whole tournament, not the page', function () {
+        const t = main();
+        const expected = { all: 8, pending: 2, verified: 4, rejected: 2, withdrawn: 3, eligible: 3 };
+
+        const full = Suites._call('player.list', { tournamentId: t.tid, pageSize: 200 }, admin);
+        T.assertEqual(Object.keys(full.counts).sort(),
+          ['all', 'eligible', 'pending', 'rejected', 'verified', 'withdrawn'],
+          'CONTRACTS-PHASE2 §3 pins these six keys exactly');
+        T.assertEqual(full.counts, expected, 'the baseline counts for the fixture');
+
+        // THE ACTUAL CONTRACT: the admin needs "42 still pending" while looking
+        // at page 1 of 8. A page-scoped count would read "1 pending" here.
+        const one = Suites._call('player.list',
+          { tournamentId: t.tid, pageSize: 1, page: 3 }, admin);
+        T.assertEqual(one.rows.length, 1, 'precondition: exactly one row on this page');
+        T.assertEqual(one.total, 8, 'total is the whole filtered set, not the page');
+        T.assertEqual(one.counts, expected,
+          'a page of 1 must report the SAME tournament-wide counts. Page-scoped counts ' +
+          'would make the header say "1 registered" on a 400-player tournament.');
+
+        // Nor may a filter move them: the header has to keep saying how much work
+        // is left while the grid shows only one slice of it.
+        const filtered = Suites._call('player.list',
+          { tournamentId: t.tid, filter: { paymentStatus: PS.REJECTED } }, admin);
+        T.assertEqual(filtered.total, 2, 'the filter narrows total');
+        T.assertEqual(filtered.counts, expected, 'but never the counts');
+
+        const searched = Suites._call('player.list',
+          { tournamentId: t.tid, filter: { search: 'Hotel' } }, admin);
+        T.assertEqual(searched.total, 1, 'the search narrows total');
+        T.assertEqual(searched.counts, expected, 'but never the counts');
+      });
+
+      // -----------------------------------------------------------------------
+      // Tournament isolation — DESIGN.md §39
+      // -----------------------------------------------------------------------
+
+      T.test('one tournament never sees another tournament\'s players', function () {
+        const t = main();
+        const o = other();
+
+        const mine = Suites._call('player.list', { tournamentId: t.tid, pageSize: 200 }, admin);
+        const theirs = Suites._call('player.list', { tournamentId: o.tid, pageSize: 200 }, admin);
+
+        T.assertEqual(mine.total, 8, 'tournament A has eight players');
+        T.assertEqual(theirs.total, 2,
+          'tournament B has exactly two — a total of 10 means the pass over Players is ' +
+          'not filtering by tournament_id (DESIGN.md §39)');
+        T.assertEqual(mine.counts.all, 8, 'and the counts are scoped the same way');
+        T.assertEqual(theirs.counts.all, 2, 'B\'s counts must not include A\'s players');
+
+        const mineIds = {};
+        mine.rows.forEach(r => { mineIds[r.player_id] = true; });
+        theirs.rows.forEach(r => {
+          T.assert(mineIds[r.player_id] !== true,
+            'player ' + r.player_id + ' appears in both tournaments');
+        });
+
+        // The Payments join is the other place a tournament boundary can leak:
+        // both tournaments have a serial 1 and a serial 2.
+        const theirRefs = {};
+        theirs.rows.forEach(r => { theirRefs[r.upi_ref] = true; });
+        mine.rows.forEach(r => {
+          T.assert(theirRefs[r.upi_ref] !== true,
+            'the UPI reference "' + r.upi_ref + '" was joined onto a player from the ' +
+            'other tournament — the payment index is not tournament-scoped');
+        });
+      });
+
+      // -----------------------------------------------------------------------
+      // The bulk-response security boundary — DESIGN.md §16 risk 1
+      // -----------------------------------------------------------------------
+
+      T.test('screenshot_file_id never appears in a player.list response', function () {
+        // CONTRACTS-PHASE2 §1: "Never include screenshot_file_id in a list row."
+        // A Drive file id is enough to build an unauthenticated link to somebody's
+        // bank payment proof. Screenshots are fetched one at a time behind an
+        // admin token; an id has no reason to be in a bulk response of 200 rows.
+        const t = main();
+        const res = Suites._call('player.list', { tournamentId: t.tid, pageSize: 200 }, admin);
+        T.assertEqual(res.rows.length, 8, 'precondition: every fixture row is on this page');
+
+        // The row shape is copied verbatim from CONTRACTS-PHASE2 §1 and compared
+        // EXACTLY, so a new field has to change the contract rather than appear
+        // by accident.
+        T.assertEqual(Object.keys(res.rows[0]).sort(), [
+          'age_years', 'auction_status', 'dob', 'is_withdrawn', 'mobile', 'name',
+          'payment_id', 'payment_status', 'photo_thumb_url', 'player_id',
+          'registered_at', 'registered_at_display', 'role', 'serial_no',
+          'sold_amount', 'style', 'team_id', 'upi_ref'
+        ], 'a list row must be exactly the CONTRACTS-PHASE2 §1 fields');
+
+        // Keys are only half of it — a value can hide inside an allowed key, so
+        // the real assertion is made against the SERIALISED response.
+        const wire = JSON.stringify(res);
+        const shotIds = Repo.readAll(SHEETS.PAYMENTS)
+          .filter(r => String(r.tournament_id) === t.tid)
+          .map(r => String(r.screenshot_file_id || ''));
+        T.assertEqual(shotIds.length, 8, 'precondition: eight fixture payments');
+        shotIds.forEach(id => {
+          T.assert(id.length > 0,
+            'precondition: the fixture screenshot ids must be non-blank, or this test ' +
+            'would pass against anything');
+          T.assert(wire.indexOf(id) === -1,
+            'the screenshot file id "' + id + '" reached the browser inside a bulk list ' +
+            'response. That id is an unauthenticated link to a payment proof ' +
+            '(DESIGN.md §16 risk 1).');
+        });
+        T.assert(wire.indexOf('screenshot') === -1,
+          'the word "screenshot" appears in the serialised list response; nothing about ' +
+          'the payment proof belongs in a bulk row');
+      });
+
+      // -----------------------------------------------------------------------
+      // Scope — DESIGN.md §5.4, §39
+      // -----------------------------------------------------------------------
+
+      T.test('an ORGANISER sees only their own tournament; an ADMIN sees any', function () {
+        const t = main();
+        const o = other();
+        const organiser = Suites._organiserSession('plorg', t.tid);
+
+        const own = Suites._call('player.list', { tournamentId: t.tid }, organiser);
+        T.assertEqual(own.total, 8,
+          'an organiser must be able to read their own register (CONTRACTS-PHASE2 §1)');
+
+        T.assertThrows(
+          () => Suites._call('player.list', { tournamentId: o.tid }, organiser),
+          ERR.FORBIDDEN,
+          'one organiser reading another tournament\'s players is the main tenancy leak ' +
+          '(DESIGN.md §39, §16 risk 3)');
+
+        T.assertEqual(Suites._call('player.list', { tournamentId: t.tid }, admin).total, 8,
+          'ADMIN is global (DESIGN.md §5.4)');
+        T.assertEqual(Suites._call('player.list', { tournamentId: o.tid }, admin).total, 2,
+          'and may read the second tournament too');
+
+        // Fails closed rather than open when there is no session at all.
+        T.assertThrows(() => Suites._call('player.list', { tournamentId: t.tid }, null),
+          ERR.UNAUTHORIZED, 'no session means no register');
+      });
+
+      // -----------------------------------------------------------------------
+      // The eligibility predicate — CONTRACTS-PHASE2 §2
+      // -----------------------------------------------------------------------
+
+      T.test('isAuctionEligible is VERIFIED and not withdrawn, and nothing else',
+        function () {
+          // ONE predicate, written once (CONTRACTS-PHASE2 §2). A second copy in
+          // the Phase 4 auction code is how a rejected player ends up on the
+          // projector in front of 200 people.
+          //
+          // The contract names three payment statuses and one boolean, so all six
+          // combinations are checked, not just the four that are interesting.
+          const cases = [
+            [PS.VERIFIED, false, true, 'paid up and still in — the only eligible case'],
+            [PS.VERIFIED, true, false, 'paid up but pulled out (DESIGN.md §15 case 16)'],
+            [PS.PENDING, false, false, 'nobody has checked the bank statement yet'],
+            [PS.PENDING, true, false, 'unchecked and withdrawn'],
+            [PS.REJECTED, false, false, 'the payment was refused'],
+            [PS.REJECTED, true, false, 'refused and withdrawn']
+          ];
+          cases.forEach(c => {
+            const row = { payment_status: c[0], is_withdrawn: c[1] };
+            T.assertEqual(Players.isAuctionEligible(row), c[2],
+              c[0] + ' + is_withdrawn=' + c[1] + ': ' + c[3]);
+          });
+
+          // A blank status is not VERIFIED, and a row that is not a row is not a
+          // player. Both must fail CLOSED — the predicate can only ever keep
+          // somebody out by mistake, never let somebody in.
+          T.assertEqual(Players.isAuctionEligible({ payment_status: '', is_withdrawn: false }),
+            false, 'a blank payment_status must not be treated as verified');
+          T.assertEqual(Players.isAuctionEligible(null), false, 'null is not a player');
+          T.assertEqual(Players.isAuctionEligible(undefined), false, 'nor is undefined');
+          T.assertEqual(Players.isAuctionEligible({}), false, 'nor is an empty object');
+
+          // The sheet stores booleans as the strings TRUE/FALSE (CONTRACTS.md §4).
+          // A row read outside Repo's typing still has to be treated as withdrawn.
+          T.assertEqual(
+            Players.isAuctionEligible({ payment_status: PS.VERIFIED, is_withdrawn: 'TRUE' }),
+            false, 'the literal string "TRUE" is truthy and must count as withdrawn');
+
+          // And the same predicate drives the count over the whole tournament.
+          const t = main();
+          T.assertEqual(Players.eligibleCount(t.tid), 3,
+            'serials 1, 4 and 7 are VERIFIED and not withdrawn');
+          T.assertEqual(
+            Suites._call('player.list', { tournamentId: t.tid }, admin).counts.eligible,
+            Players.eligibleCount(t.tid),
+            'counts.eligible must be the same number as eligibleCount — two answers to ' +
+            'one question is how the pool and the header disagree');
+        });
+
+      // -----------------------------------------------------------------------
+      // player.setWithdrawn — CONTRACTS-PHASE2 §1, DESIGN.md §9, §15 case 16
+      // -----------------------------------------------------------------------
+
+      T.test('setWithdrawn marks the player and keeps the serial reserved for ever',
+        function () {
+          const f = withdrawable();
+          const p = f.players[0];
+          const before = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', f.tid);
+
+          const out = Suites._call('player.setWithdrawn',
+            { playerId: p.player_id, withdrawn: true, reason: 'ZZ work travel' }, admin);
+
+          T.assertEqual(Object.keys(out).sort(), ['is_withdrawn', 'player_id', 'serial_no'],
+            'CONTRACTS-PHASE2 §1 pins the response to exactly these three fields');
+          T.assertEqual(out.is_withdrawn, true, 'the new state comes back');
+          T.assertEqual(out.serial_no, 1, 'and the serial number, unchanged');
+          T.assertEqual(out.player_id, p.player_id, 'and the id that was acted on');
+
+          const row = Repo.findBy(SHEETS.PLAYERS, 'player_id', p.player_id);
+          T.assert(row !== null,
+            'withdrawing must never delete the row — DESIGN.md §9, nothing is renumbered');
+          T.assertEqual(row.is_withdrawn, true, 'the flag is set on the sheet, not just in the reply');
+          T.assertEqual(row.serial_no, 1,
+            'serial 1 belongs to this person for ever. Reissuing it puts two different ' +
+            'people on the same number in the printed list and the auction history.');
+          T.assertEqual(row.payment_status, PS.VERIFIED,
+            'payment_status mirrors the Payments row and Payments.gs is its only writer; ' +
+            'a withdrawal says nothing about whether the money arrived');
+
+          const after = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', f.tid);
+          T.assertEqual(after.next_serial, before.next_serial,
+            'and the tournament\'s serial counter is never wound back (DESIGN.md §9)');
+
+          // They drop out of the pool without anything being deleted.
+          T.assertEqual(Players.isAuctionEligible(row), false,
+            'a withdrawn player stops satisfying the §2 predicate');
+
+          // Same call again: a no-op success, not a scary message
+          // (DESIGN.md §15 case 4).
+          let threw = null;
+          let again = null;
+          try {
+            again = Suites._call('player.setWithdrawn',
+              { playerId: p.player_id, withdrawn: true }, admin);
+          } catch (e) {
+            threw = e;
+          }
+          T.assert(threw === null,
+            'withdrawing an already-withdrawn player must not be an error, got ' +
+            T._errText(threw));
+          T.assertEqual(again.is_withdrawn, true, 'and the state is reported unchanged');
+
+          // Reinstating is the same call with false — nothing is one-way here.
+          const back = Suites._call('player.setWithdrawn',
+            { playerId: p.player_id, withdrawn: false }, admin);
+          T.assertEqual(back.is_withdrawn, false, 'a withdrawal can be undone');
+          T.assertEqual(back.serial_no, 1, 'and the serial is still theirs');
+          T.assertEqual(
+            Repo.findBy(SHEETS.PLAYERS, 'player_id', p.player_id).is_withdrawn, false,
+            'the sheet follows');
+        });
+
+      T.test('setWithdrawn refuses a SOLD player with VALIDATION_FAILED', function () {
+        // A sale is three facts, not one: the player has a team_id, the team's
+        // purse_used went up and its players_count went up. Flipping is_withdrawn
+        // here would change one of the three and leave the other two standing —
+        // the team keeps paying for a player it no longer has. That has to be
+        // unwound through the Phase 7 correction flow (CONTRACTS-PHASE2 §1).
+        const f = withdrawable();
+        const p = f.players[1];
+
+        const e = T.assertThrows(() => Suites._call('player.setWithdrawn',
+          { playerId: p.player_id, withdrawn: true, reason: 'ZZ changed their mind' }, admin),
+          ERR.VALIDATION_FAILED, 'a SOLD player must not be withdrawn here');
+        T.assert(String(e.message).indexOf('#2') !== -1,
+          'the message must name the serial number so the admin knows who it is about, ' +
+          'got "' + e.message + '"');
+
+        const row = Repo.findBy(SHEETS.PLAYERS, 'player_id', p.player_id);
+        T.assertEqual(row.is_withdrawn, false, 'a refused withdrawal must leave the row alone');
+        T.assertEqual(row.auction_status, AS.SOLD, 'the sale itself is untouched');
+        T.assertEqual(row.team_id, 'TEM_zztestteam2', 'and the team still owns them');
+        T.assertEqual(row.sold_amount, 40000, 'and the money is still recorded');
+
+        T.assertEqual(Suites._auditRows(p.player_id, Audit.ACTIONS.PLAYER_WITHDRAWN).length, 0,
+          'a refused withdrawal must not write an audit row for something that did not happen');
+
+        // A bad `withdrawn` value is a refusal too — guessing what the caller
+        // meant is how somebody gets withdrawn by accident.
+        T.assertThrows(() => Suites._call('player.setWithdrawn',
+          { playerId: f.players[2].player_id, withdrawn: 'yes' }, admin),
+          ERR.VALIDATION_FAILED, '"yes" is not a boolean');
+        T.assertThrows(() => Suites._call('player.setWithdrawn',
+          { playerId: 'PLY_zzzzzzzzzzzz', withdrawn: true }, admin),
+          ERR.NOT_FOUND, 'an unknown player id');
+      });
+
+      T.test('setWithdrawn writes a PLAYER_WITHDRAWN audit row', function () {
+        // CONTRACTS-PHASE2 §4 adds this one constant to the frozen Audit.ACTIONS
+        // map. The trail is what settles a dispute afterwards (DESIGN.md §42).
+        T.assertEqual(Audit.ACTIONS.PLAYER_WITHDRAWN, 'PLAYER_WITHDRAWN',
+          'CONTRACTS-PHASE2 §4 requires this constant on Audit.ACTIONS');
+
+        const f = withdrawable();
+        const p = f.players[2];
+        T.assertEqual(Suites._auditRows(p.player_id, null).length, 0,
+          'precondition: nothing has been recorded about this player yet');
+
+        Suites._call('player.setWithdrawn',
+          { playerId: p.player_id, withdrawn: true, reason: 'ZZ injured before the auction' },
+          admin);
+
+        const rows = Suites._auditRows(p.player_id, Audit.ACTIONS.PLAYER_WITHDRAWN);
+        T.assertEqual(rows.length, 1, 'exactly one audit row per withdrawal');
+        const row = rows[0];
+        T.assertEqual(row.actor_user_id, admin.user_id,
+          'the trail has to name who decided (DESIGN.md §42)');
+        T.assertEqual(row.actor_role, ENUM.USER_ROLE.ADMIN, 'and in what capacity');
+        T.assertEqual(row.entity_type, 'Player', 'the entity type');
+        T.assertEqual(row.entity_id, p.player_id, 'the entity id');
+        T.assertEqual(row.tournament_id, f.tid, 'and the tournament it belongs to');
+        T.assert(!isNaN(Date.parse(row.timestamp)),
+          'timestamp must be a parseable instant, got ' + T._fmt(row.timestamp));
+
+        const prev = Util.safeJsonParse(row.prev_value, null);
+        const next = Util.safeJsonParse(row.new_value, null);
+        T.assert(prev !== null && next !== null,
+          'prev and new must both be stored as JSON (CONTRACTS.md §10)');
+        T.assertEqual(prev.is_withdrawn, false, 'the audit row carries the previous value');
+        T.assertEqual(next.is_withdrawn, true, 'and the new one');
+        T.assertEqual(next.serial_no, 3,
+          'and the serial, because that is what a later dispute is about');
+
+        // A repeated call changes nothing, so it records nothing.
+        Suites._call('player.setWithdrawn', { playerId: p.player_id, withdrawn: true }, admin);
+        T.assertEqual(Suites._auditRows(p.player_id, Audit.ACTIONS.PLAYER_WITHDRAWN).length, 1,
+          'a no-op must not fill an append-only trail with rows for a change that never ' +
+          'happened');
+      });
+    });
+  },
+
+  // ===========================================================================
+  // PaymentVerify — CONTRACTS-PHASE2.md §1 (payment.list, payment.getScreenshot,
+  // payment.verify, payment.reject), §3 (counts) and §4 (audit).
+  // Rationale: DESIGN.md §6.3, §12, §13, §14, §15 cases 4 and 15, §16, §42.
+  //
+  // The governing rule (DESIGN.md §12): the application never decides that a
+  // payment succeeded. A human compares the UPI reference against a bank
+  // statement and clicks. Everything here exists to make that comparison fast
+  // and to record who decided what, when.
+  //
+  // Two things in this suite are load bearing rather than thorough:
+  //   1. verify and reject must MIRROR payment_status onto the Players row. The
+  //      auction pool reads the mirrored column (DESIGN.md §14); asserting only
+  //      the Payments row would pass while an unpaid player walked into the
+  //      auction.
+  //   2. payment.getScreenshot must never return a Drive id or a Drive URL. That
+  //      is risk #1 in DESIGN.md §16, and the test for it reads the serialised
+  //      response, not the keys.
+  // ===========================================================================
+
+  paymentVerify() {
+    T.suite('PaymentVerify', function () {
+      const PS = ENUM.PAYMENT_STATUS;
+      const AS = ENUM.AUCTION_STATUS;
+      const admin = Suites._adminSession('pvadm');
+
+      const fx = {};
+
+      /** The workhorse tournament. Every test that mutates state takes a fresh
+       *  player and payment out of it, so no test depends on another. */
+      function main() {
+        if (!fx.main) {
+          fx.main = { t: Suites._seedTournament('pvmain', { withFolders: false }), serial: 0 };
+        }
+        return fx.main;
+      }
+
+      /**
+       * One brand-new PENDING payment nobody else has touched.
+       * @param {Object=} overrides row fields for the seeded player/payment
+       * @return {{tid:string, player:!Object, payment:!Object}}
+       */
+      function freshPayment(overrides) {
+        const m = main();
+        m.serial += 1;
+        const spec = { serial_no: m.serial, name: 'ZZ Pay ' + Suites._seqLetters() };
+        const o = overrides || {};
+        Object.keys(o).forEach(k => { spec[k] = o[k]; });
+        const roster = Suites._seedRoster(m.t.tid, [spec]);
+        return { tid: m.t.tid, player: roster.players[0], payment: roster.payments[0] };
+      }
+
+      /**
+       * Five players with fixed statuses, so the counts a decision returns can be
+       * asserted as exact numbers rather than as a shape.
+       *   1 PENDING · 2 PENDING · 3 VERIFIED · 4 REJECTED · 5 VERIFIED+withdrawn
+       * Baseline: all 5, pending 2, verified 2, rejected 1, withdrawn 1, eligible 1.
+       */
+      function countable() {
+        if (!fx.counts) {
+          const t = Suites._seedTournament('pvcnts', { withFolders: false });
+          const roster = Suites._seedRoster(t.tid, [
+            { serial_no: 1, name: 'ZZ Count One', payment_status: PS.PENDING },
+            { serial_no: 2, name: 'ZZ Count Two', payment_status: PS.PENDING },
+            { serial_no: 3, name: 'ZZ Count Three', payment_status: PS.VERIFIED },
+            { serial_no: 4, name: 'ZZ Count Four', payment_status: PS.REJECTED },
+            { serial_no: 5, name: 'ZZ Count Five', payment_status: PS.VERIFIED,
+              is_withdrawn: true }
+          ]);
+          fx.counts = { tid: t.tid, players: roster.players, payments: roster.payments };
+        }
+        return fx.counts;
+      }
+
+      /** Two players with the same name written differently, plus a near miss. */
+      function duplicates() {
+        if (!fx.dup) {
+          const t = Suites._seedTournament('pvdup', { withFolders: false });
+          Suites._seedRoster(t.tid, [
+            { serial_no: 21, name: 'ZZ Raj Kumar' },
+            // Same name once whitespace runs are collapsed and case is folded.
+            { serial_no: 22, name: 'zz   raj  kumar' },
+            // A NEAR match, which must be left alone.
+            { serial_no: 23, name: 'ZZ Rajkumar' }
+          ]);
+          fx.dup = { tid: t.tid };
+        }
+        return fx.dup;
+      }
+
+      /** Four payments of mixed status and age, for the queue defaults. */
+      function queue() {
+        if (!fx.queue) {
+          const t = Suites._seedTournament('pvque', { withFolders: false });
+          Suites._seedRoster(t.tid, [
+            { serial_no: 31, name: 'ZZ Queue Newer', payment_status: PS.PENDING,
+              submitted_at: '2026-08-05T06:00:00.000Z' },
+            { serial_no: 32, name: 'ZZ Queue Older', payment_status: PS.PENDING,
+              submitted_at: '2026-08-01T06:00:00.000Z' },
+            { serial_no: 33, name: 'ZZ Queue Done', payment_status: PS.VERIFIED,
+              submitted_at: '2026-08-02T06:00:00.000Z' },
+            { serial_no: 34, name: 'ZZ Queue Refused', payment_status: PS.REJECTED,
+              submitted_at: '2026-08-03T06:00:00.000Z' }
+          ]);
+          fx.queue = { tid: t.tid };
+        }
+        return fx.queue;
+      }
+
+      /** One payment with a REAL image in the private Drive folder. */
+      function proof() {
+        if (!fx.proof) {
+          const t = Suites._seedTournament('pvshot', {});
+          T.assert(t.folders,
+            'fixture precondition: the tournament needs its Drive folders for this test');
+          const fileId = Drive.uploadImage(
+            t.folders.paymentsId, Suites._jpegBase64(), DRIVE_MIME_JPEG, 'zz-proof.jpg');
+          T.trackDrive(fileId, 'file');
+          const roster = Suites._seedRoster(t.tid, [
+            { serial_no: 41, name: 'ZZ Proof Owner', mobile: '9500000041',
+              upi_ref: 'ZZPROOFUPIREF41', screenshot_file_id: fileId }
+          ]);
+          fx.proof = {
+            tid: t.tid, fileId: fileId,
+            player: roster.players[0], payment: roster.payments[0]
+          };
+        }
+        return fx.proof;
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('every Phase 2 payment action is ADMIN-only over POST', function () {
+        ['payment.list', 'payment.getScreenshot', 'payment.verify', 'payment.reject']
+          .forEach(name => {
+            const r = Suites._route(name);
+            T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+            T.assert(r.methods.indexOf('GET') === -1,
+              name + ' must not be reachable over GET. verify and reject write, and a ' +
+              'screenshot behind a GET URL lands in browser history and server logs — ' +
+              'the exact leak DESIGN.md §16 risk 1 exists to prevent.');
+            T.assert(r.auth !== 'PUBLIC', name + ' must never be PUBLIC');
+            T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+              name + ' must allow ADMIN, got auth = ' + T._fmt(r.auth));
+            T.assert(!Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER),
+              name + ' is ADMIN only (CONTRACTS-PHASE2 §1). An organiser runs the ' +
+              'auction; whose money arrived is not theirs to decide. Got auth = ' +
+              T._fmt(r.auth));
+          });
+      });
+
+      // -----------------------------------------------------------------------
+      // verify and reject — the mirror is the whole point
+      // -----------------------------------------------------------------------
+
+      T.test('verify sets status, verifier and time, and MIRRORS onto the Players row',
+        function () {
+          const f = freshPayment();
+          const out = Suites._call('payment.verify',
+            { paymentId: f.payment.payment_id, note: 'ZZ matched the bank statement' }, admin);
+
+          T.assertEqual(out.status, PS.VERIFIED, 'the decision comes back');
+          T.assertEqual(out.payment_id, f.payment.payment_id, 'the payment id is echoed');
+          T.assertEqual(out.player_id, f.player.player_id, 'and the player it belongs to');
+          T.assertEqual(out.serial_no, f.player.serial_no, 'and their serial number');
+          T.assert(!Util.isBlank(out.verified_at_display),
+            'the admin screen prints verified_at_display, got ' + T._fmt(out.verified_at_display));
+          T.assert(out.alreadyVerified === undefined,
+            'a first verify is not an "already done"');
+          T.assert(out.reversedFrom === undefined,
+            'PENDING -> VERIFIED is a first decision, not a reversal');
+
+          const pay = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+          T.assertEqual(pay.status, PS.VERIFIED, 'the Payments row is updated');
+          T.assertEqual(pay.verified_by, admin.user_id,
+            'verified_by must be the session user (CONTRACTS-PHASE2 §1 step 4) — this is ' +
+            'the field a dispute about who approved the payment turns on');
+          T.assert(!isNaN(Date.parse(pay.verified_at)),
+            'verified_at must be a parseable UTC instant, got ' + T._fmt(pay.verified_at));
+
+          // ========================= THE ONE THAT MATTERS =======================
+          // The auction pool reads the MIRRORED column on the Players row
+          // (DESIGN.md §14, CONTRACTS-PHASE2 §2), not the Payments tab. Asserting
+          // only the payment row would pass while a paid-up player was turned away
+          // at the auction table, or an unpaid one walked in.
+          // ======================================================================
+          const player = Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id);
+          T.assertEqual(player.payment_status, PS.VERIFIED,
+            'the Players mirror still says "' + player.payment_status + '". Payments and ' +
+            'Players must be written inside one lock and flushed together ' +
+            '(CONTRACTS-PHASE2 §1 step 5).');
+          T.assertEqual(Players.isAuctionEligible(player), true,
+            'and the §2 predicate must now admit them');
+
+          // Audited (CONTRACTS-PHASE2 §4).
+          const rows = Suites._auditRows(f.payment.payment_id, Audit.ACTIONS.PAYMENT_VERIFIED);
+          T.assertEqual(rows.length, 1, 'exactly one PAYMENT_VERIFIED row');
+          T.assertEqual(rows[0].actor_user_id, admin.user_id, 'naming who decided');
+          T.assertEqual(rows[0].tournament_id, f.tid, 'and which tournament');
+          const prev = Util.safeJsonParse(rows[0].prev_value, null);
+          const next = Util.safeJsonParse(rows[0].new_value, null);
+          T.assert(prev !== null && next !== null,
+            'prev and new must both be stored as JSON (CONTRACTS.md §10)');
+          T.assertEqual(prev.status, PS.PENDING, 'the audit row carries the previous value');
+          T.assertEqual(next.status, PS.VERIFIED, 'and the new one');
+        });
+
+      T.test('reject mirrors onto the Players row too', function () {
+        const f = freshPayment();
+        const reason = 'ZZ no matching credit in the bank statement';
+        const out = Suites._call('payment.reject',
+          { paymentId: f.payment.payment_id, reason: reason }, admin);
+
+        T.assertEqual(out.status, PS.REJECTED, 'the decision comes back');
+        T.assertEqual(out.payment_id, f.payment.payment_id, 'the payment id is echoed');
+        T.assertEqual(out.serial_no, f.player.serial_no, 'and the serial number');
+        T.assert(out.reversedFrom === undefined,
+          'PENDING -> REJECTED is a first decision, not a reversal');
+
+        const pay = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+        T.assertEqual(pay.status, PS.REJECTED, 'the Payments row is updated');
+        T.assertEqual(pay.reject_reason, reason,
+          'the reason is stored, because the player has to be told why (DESIGN.md §16 risk 6)');
+        T.assertEqual(pay.verified_by, admin.user_id,
+          'who decided is recorded for a rejection too, not only for an approval');
+        T.assert(!isNaN(Date.parse(pay.verified_at)), 'and when');
+
+        const player = Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id);
+        T.assertEqual(player.payment_status, PS.REJECTED,
+          'the Players mirror still says "' + player.payment_status + '". A rejected ' +
+          'payment that never reaches the mirror leaves the player in the auction pool ' +
+          '(DESIGN.md §14).');
+        T.assertEqual(Players.isAuctionEligible(player), false,
+          'and the §2 predicate must now refuse them');
+
+        const rows = Suites._auditRows(f.payment.payment_id, Audit.ACTIONS.PAYMENT_REJECTED);
+        T.assertEqual(rows.length, 1, 'exactly one PAYMENT_REJECTED row');
+        const next = Util.safeJsonParse(rows[0].new_value, null);
+        T.assert(next !== null, 'the new value must be stored as JSON');
+        T.assertEqual(next.status, PS.REJECTED, 'and it records the decision');
+      });
+
+      // -----------------------------------------------------------------------
+      // Two admins on one queue — DESIGN.md §15 case 4
+      // -----------------------------------------------------------------------
+
+      T.test('a second verify is a silent no-op: one audit row, the first verifier kept',
+        function () {
+          const f = freshPayment();
+          Suites._call('payment.verify', { paymentId: f.payment.payment_id }, admin);
+          const firstRow = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+          T.assertEqual(firstRow.verified_by, admin.user_id,
+            'precondition: the first verifier is on the row');
+          const firstAt = String(firstRow.verified_at);
+
+          // A second admin working the same queue. Ordinary behaviour, not an
+          // exception (DESIGN.md §15 case 4).
+          const second = Suites._adminSession('pvadm2');
+          let out = null;
+          let threw = null;
+          try {
+            out = Suites._call('payment.verify', { paymentId: f.payment.payment_id }, second);
+          } catch (e) {
+            threw = e;
+          }
+          T.assert(threw === null,
+            'two admins clicking the same row must not produce a scary message, got ' +
+            T._errText(threw));
+          T.assertEqual(out.alreadyVerified, true,
+            'CONTRACTS-PHASE2 §1 step 2 pins this flag on the no-op response');
+          T.assertEqual(out.status, PS.VERIFIED, 'the existing state comes back');
+          T.assert(out.counts && typeof out.counts.eligible === 'number',
+            'and the counts come back with it, got ' + T._fmt(out.counts));
+
+          const after = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+          T.assertEqual(after.verified_by, admin.user_id,
+            'the FIRST verifier must be preserved. Overwriting them rewrites who made the ' +
+            'decision, which is the one thing the trail exists to settle (DESIGN.md §42).');
+          T.assertEqual(String(after.verified_at), firstAt,
+            'and the instant it was decided must not move either');
+
+          T.assertEqual(
+            Suites._auditRows(f.payment.payment_id, Audit.ACTIONS.PAYMENT_VERIFIED).length, 1,
+            'a no-op must not write a second audit row — nothing happened');
+        });
+
+      T.test('a second reject keeps the original reason and writes no second audit row',
+        function () {
+          const f = freshPayment();
+          const original = 'ZZ the UPI reference is not in the statement';
+          Suites._call('payment.reject',
+            { paymentId: f.payment.payment_id, reason: original }, admin);
+
+          const second = Suites._adminSession('pvadm3');
+          let out = null;
+          let threw = null;
+          try {
+            out = Suites._call('payment.reject',
+              { paymentId: f.payment.payment_id, reason: 'ZZ a completely different reason' },
+              second);
+          } catch (e) {
+            threw = e;
+          }
+          T.assert(threw === null,
+            'a repeated rejection must not be an error, got ' + T._errText(threw));
+          T.assertEqual(out.alreadyRejected, true,
+            'the no-op is reported, the same way verify reports alreadyVerified');
+          T.assertEqual(out.status, PS.REJECTED, 'the existing state comes back');
+
+          const after = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+          T.assertEqual(after.reject_reason, original,
+            'the ORIGINAL reason must survive. It is what the player was told, and ' +
+            'overwriting it makes the earlier conversation unexplainable.');
+          T.assertEqual(after.verified_by, admin.user_id, 'and the original decider');
+
+          T.assertEqual(
+            Suites._auditRows(f.payment.payment_id, Audit.ACTIONS.PAYMENT_REJECTED).length, 1,
+            'one decision, one audit row');
+        });
+
+      // -----------------------------------------------------------------------
+      // Reversals
+      // -----------------------------------------------------------------------
+
+      T.test('verify after reject, and reject after verify, are recorded as reversals',
+        function () {
+          // People do change their minds after a second look at the bank
+          // statement. That is allowed, but it is a reversal of an earlier human
+          // decision and the trail has to say so (CONTRACTS-PHASE2 §1, §4).
+          const a = freshPayment();
+          Suites._call('payment.verify', { paymentId: a.payment.payment_id }, admin);
+          const toRejected = Suites._call('payment.reject',
+            { paymentId: a.payment.payment_id, reason: 'ZZ the credit was for another player' },
+            admin);
+
+          T.assertEqual(toRejected.reversedFrom, PS.VERIFIED,
+            'CONTRACTS-PHASE2 §1: rejecting a VERIFIED payment reports reversedFrom');
+          T.assertEqual(toRejected.status, PS.REJECTED, 'and the new state');
+          T.assertEqual(
+            Repo.findBy(SHEETS.PLAYERS, 'player_id', a.player.player_id).payment_status,
+            PS.REJECTED,
+            'the mirror must follow the reversal, or the player stays in the pool after ' +
+            'their payment was taken back (DESIGN.md §14)');
+
+          const aAudit = Suites._auditRows(a.payment.payment_id, null);
+          T.assertEqual(aAudit.length, 2,
+            'a reversal is a SECOND audit row, never an edit of the first — the trail is ' +
+            'append-only (DESIGN.md §42)');
+          T.assertEqual(aAudit[0].action, Audit.ACTIONS.PAYMENT_VERIFIED, 'first the approval');
+          T.assertEqual(aAudit[1].action, Audit.ACTIONS.PAYMENT_REJECTED, 'then the reversal');
+          const aNext = Util.safeJsonParse(aAudit[1].new_value, null);
+          T.assert(aNext !== null, 'the reversal row must carry its new value as JSON');
+          T.assertEqual(aNext.reversal, true, 'and be marked as a reversal');
+          T.assertEqual(aNext.reversed_from, PS.VERIFIED, 'naming what it reversed');
+
+          const b = freshPayment();
+          Suites._call('payment.reject',
+            { paymentId: b.payment.payment_id, reason: 'ZZ amount looked wrong at first' }, admin);
+          const toVerified = Suites._call('payment.verify',
+            { paymentId: b.payment.payment_id }, admin);
+
+          T.assertEqual(toVerified.reversedFrom, PS.REJECTED,
+            'verifying a REJECTED payment reports reversedFrom the other way round');
+          T.assertEqual(toVerified.status, PS.VERIFIED, 'and the new state');
+
+          const bPlayer = Repo.findBy(SHEETS.PLAYERS, 'player_id', b.player.player_id);
+          T.assertEqual(bPlayer.payment_status, PS.VERIFIED, 'the mirror follows again');
+          T.assertEqual(Players.isAuctionEligible(bPlayer), true,
+            'and the player is back in the pool');
+
+          const bPay = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', b.payment.payment_id);
+          T.assertEqual(bPay.reject_reason, '',
+            'a VERIFIED row must not keep the old rejection reason sitting next to it — ' +
+            'that is the pair of facts a support call reads as a contradiction');
+          T.assertEqual(Suites._auditRows(b.payment.payment_id, null).length, 2,
+            'two decisions, two rows');
+        });
+
+      // -----------------------------------------------------------------------
+      // The rejection reason — CONTRACTS-PHASE2 §1, DESIGN.md §16 risk 6
+      // -----------------------------------------------------------------------
+
+      T.test('a rejection reason that is missing, blank, too short or too long is refused',
+        function () {
+          const f = freshPayment();
+          const id = f.payment.payment_id;
+
+          [[{}, 'no reason field at all'],
+           [{ reason: '' }, 'an empty reason'],
+           [{ reason: '   ' }, 'whitespace is not a reason'],
+           [{ reason: null }, 'a null reason'],
+           [{ reason: 'zz' }, 'two characters is under the 3-char minimum'],
+           [{ reason: 'z'.repeat(201) }, '201 characters is over the 200-char maximum']
+          ].forEach(pair => {
+            const payload = { paymentId: id };
+            Object.keys(pair[0]).forEach(k => { payload[k] = pair[0][k]; });
+            T.assertThrows(() => Suites._call('payment.reject', payload, admin),
+              ERR.VALIDATION_FAILED,
+              pair[1] + ' — a rejection nobody can explain to the player who paid ' +
+              '(CONTRACTS-PHASE2 §1, DESIGN.md §16 risk 6)');
+          });
+
+          // Not one of those may have changed anything.
+          const pay = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', id);
+          T.assertEqual(pay.status, PS.PENDING, 'the payment must still be PENDING');
+          T.assertEqual(pay.reject_reason, '', 'and carry no reason');
+          T.assertEqual(pay.verified_by, '', 'and no decider');
+          T.assertEqual(
+            Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id).payment_status,
+            PS.PENDING, 'nor may the mirror have moved');
+          T.assertEqual(Suites._auditRows(id, null).length, 0,
+            'nor may a refused rejection be written into the trail');
+
+          // The boundaries themselves are accepted, so the rule is 3..200 and not
+          // 4..199.
+          const three = freshPayment();
+          Suites._call('payment.reject',
+            { paymentId: three.payment.payment_id, reason: 'zzz' }, admin);
+          T.assertEqual(
+            Repo.findBy(SHEETS.PAYMENTS, 'payment_id', three.payment.payment_id).reject_reason,
+            'zzz', 'exactly 3 characters is allowed');
+
+          const long = freshPayment();
+          const twoHundred = 'z'.repeat(200);
+          Suites._call('payment.reject',
+            { paymentId: long.payment.payment_id, reason: twoHundred }, admin);
+          T.assertEqual(
+            Repo.findBy(SHEETS.PAYMENTS, 'payment_id', long.payment.payment_id).reject_reason,
+            twoHundred, 'exactly 200 characters is allowed');
+        });
+
+      T.test('rejecting deletes nothing — row, serial, photos, screenshot and upi_ref survive',
+        function () {
+          // CONTRACTS-PHASE2 §1: "Rejecting never deletes anything." The player
+          // row, the images and above all the serial number stay (DESIGN.md §9).
+          // A rejection is a disputed fact, and the evidence has to outlive it.
+          const f = freshPayment();
+          const playerBefore = Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id);
+          const payBefore = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+          const trnBefore = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', f.tid);
+          T.assert(!Util.isBlank(payBefore.screenshot_file_id),
+            'precondition: the fixture payment has a screenshot on file');
+
+          Suites._call('payment.reject',
+            { paymentId: f.payment.payment_id, reason: 'ZZ could not find this credit' }, admin);
+
+          const playerAfter = Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id);
+          T.assert(playerAfter !== null, 'the Players row must still exist');
+          T.assertEqual(playerAfter.serial_no, playerBefore.serial_no,
+            'the serial number stays with this person for ever (DESIGN.md §9)');
+          T.assertEqual(playerAfter.name, playerBefore.name, 'the name survives');
+          T.assertEqual(playerAfter.mobile, playerBefore.mobile, 'the mobile survives');
+          T.assertEqual(playerAfter.photo_file_id, playerBefore.photo_file_id,
+            'the profile photo is not deleted');
+          T.assertEqual(playerAfter.photo_thumb_url, playerBefore.photo_thumb_url,
+            'nor is its cached thumbnail URL');
+          T.assertEqual(playerAfter.is_withdrawn, false,
+            'a rejected payment is not a withdrawal — those are different facts');
+          T.assertEqual(playerAfter.auction_status, AS.PENDING,
+            'auction_status is not this action\'s to change');
+          T.assertEqual(playerAfter.payment_status, PS.REJECTED,
+            'only payment_status changes');
+
+          const payAfter = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+          T.assert(payAfter !== null, 'the Payments row must still exist');
+          T.assertEqual(payAfter.screenshot_file_id, payBefore.screenshot_file_id,
+            'the payment proof is the evidence in a dispute and is never deleted');
+          T.assertEqual(payAfter.upi_ref, payBefore.upi_ref,
+            'the UPI reference stays, so the same one cannot be quietly reused');
+          T.assertEqual(payAfter.amount, payBefore.amount, 'the amount stays');
+          T.assertEqual(payAfter.submitted_at, payBefore.submitted_at,
+            'and when it was submitted');
+
+          const trnAfter = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', f.tid);
+          T.assertEqual(trnAfter.next_serial, trnBefore.next_serial,
+            'and the serial counter is never wound back');
+        });
+
+      // -----------------------------------------------------------------------
+      // Counts — CONTRACTS-PHASE2 §3
+      // -----------------------------------------------------------------------
+
+      T.test('verify and reject both return the tournament-wide counts', function () {
+        // Returned by the decision itself so the admin header updates without a
+        // second round trip. At 400 players that saves a full sheet read per click.
+        const f = countable();
+
+        const afterVerify = Suites._call('payment.verify',
+          { paymentId: f.payments[0].payment_id }, admin);
+        T.assertEqual(Object.keys(afterVerify.counts).sort(),
+          ['all', 'eligible', 'pending', 'rejected', 'verified', 'withdrawn'],
+          'CONTRACTS-PHASE2 §3 pins these six keys exactly');
+        T.assertEqual(afterVerify.counts,
+          { all: 5, pending: 1, verified: 3, rejected: 1, withdrawn: 1, eligible: 2 },
+          'verifying serial 1 moves it from pending to verified and into the pool');
+
+        const afterReject = Suites._call('payment.reject',
+          { paymentId: f.payments[1].payment_id, reason: 'ZZ paid the wrong tournament' },
+          admin);
+        T.assertEqual(afterReject.counts,
+          { all: 5, pending: 0, verified: 3, rejected: 2, withdrawn: 1, eligible: 2 },
+          'rejecting serial 2 empties the queue without changing the pool');
+
+        // The withdrawn VERIFIED player (serial 5) is counted in `verified` AND in
+        // `withdrawn`, and must NOT be counted in `eligible`. That is the whole
+        // reason `eligible` is a separate number.
+        T.assertEqual(afterReject.counts.eligible, Players.eligibleCount(f.tid),
+          'counts.eligible must agree with the single §2 predicate');
+        T.assertEqual(afterReject.counts, Players.counts(f.tid),
+          'and with a fresh whole-tournament count');
+
+        // Tournament-wide, never page-scoped, and the same object comes back from
+        // the list endpoint.
+        const listed = Suites._call('payment.list',
+          { tournamentId: f.tid, pageSize: 1, filter: { paymentStatus: 'ALL' } }, admin);
+        T.assertEqual(listed.rows.length, 1, 'precondition: one row on the page');
+        T.assertEqual(listed.counts, afterReject.counts,
+          'a page of 1 must report the same tournament-wide counts');
+      });
+
+      // -----------------------------------------------------------------------
+      // possible_duplicate_of — a hint, never a decision (DESIGN.md §15 case 15)
+      // -----------------------------------------------------------------------
+
+      T.test('possible_duplicate_of is an exact name match, never a near one', function () {
+        const f = duplicates();
+        const res = Suites._call('payment.list',
+          { tournamentId: f.tid, pageSize: 200 }, admin);
+        T.assertEqual(res.total, 3, 'precondition: all three fixture payments are PENDING');
+
+        const bySerial = {};
+        res.rows.forEach(r => { bySerial[r.serial_no] = r; });
+
+        T.assertEqual(bySerial[21].possible_duplicate_of, 22,
+          '"ZZ Raj Kumar" and "zz   raj  kumar" are the same name once whitespace runs ' +
+          'are collapsed and case is folded. A player can register twice from two ' +
+          'different mobile numbers and no unique constraint catches it, so the admin ' +
+          'needs the nudge (DESIGN.md §15 case 15).');
+        T.assertEqual(bySerial[22].possible_duplicate_of, 21,
+          'and it points both ways, so either row can be compared against the other');
+
+        T.assertEqual(bySerial[23].possible_duplicate_of, null,
+          '"ZZ Rajkumar" is NOT "ZZ Raj Kumar". CONTRACTS-PHASE2 §1 says exact-match ' +
+          'only: a fuzzy match would put a false accusation on screen next to a real ' +
+          'person\'s name, and common names are common.');
+
+        // It is a hint. Nothing about it may block or change a decision.
+        const out = Suites._call('payment.verify',
+          { paymentId: bySerial[21].payment_id }, admin);
+        T.assertEqual(out.status, PS.VERIFIED,
+          'a duplicate hint must never stop a verification — the app points, the human ' +
+          'decides (DESIGN.md §12)');
+      });
+
+      // -----------------------------------------------------------------------
+      // payment.list — the queue defaults
+      // -----------------------------------------------------------------------
+
+      T.test('payment.list defaults to PENDING, oldest first', function () {
+        const f = queue();
+        const res = Suites._call('payment.list', { tournamentId: f.tid }, admin);
+
+        T.assertEqual(res.total, 2,
+          'omitting the filter must mean PENDING — the queue opens on the work still to ' +
+          'do (CONTRACTS-PHASE2 §1), not on everything ever submitted');
+        T.assertEqual(res.rows.map(r => r.status), [PS.PENDING, PS.PENDING],
+          'and nothing already decided is in it');
+        T.assertEqual(res.rows.map(r => r.serial_no), [32, 31],
+          'oldest first: serial 32 was submitted on 1 Aug, serial 31 on 5 Aug. ' +
+          'Newest-first would make the admin work the queue backwards and leave the ' +
+          'longest-waiting registration waiting longest.');
+
+        T.assertEqual(res.page, 1, 'the first page');
+        T.assertEqual(res.pageSize, 50, 'the default page size');
+        T.assertEqual(res.counts.all, 4,
+          'counts cover the whole tournament, not the PENDING slice');
+
+        // The row shape is copied verbatim from CONTRACTS-PHASE2 §1.
+        T.assertEqual(Object.keys(res.rows[0]).sort(), [
+          'amount', 'amount_display', 'mobile', 'name', 'payment_id', 'photo_thumb_url',
+          'player_id', 'possible_duplicate_of', 'serial_no', 'status', 'submitted_at',
+          'submitted_at_display', 'upi_ref'
+        ], 'a queue row must be exactly the contracted fields');
+        T.assertEqual(res.rows[0].amount_display, Util.formatINR(res.rows[0].amount),
+          'amount_display is the ₹-formatted form of the same integer');
+
+        // And no file id here either — same boundary as player.list.
+        const wire = JSON.stringify(res);
+        Repo.readAll(SHEETS.PAYMENTS).forEach(r => {
+          if (String(r.tournament_id) !== f.tid) return;
+          const id = String(r.screenshot_file_id || '');
+          if (!id) return;
+          T.assert(wire.indexOf(id) === -1,
+            'the screenshot file id "' + id + '" reached the browser in the queue response ' +
+            '(DESIGN.md §16 risk 1)');
+        });
+
+        const all = Suites._call('payment.list',
+          { tournamentId: f.tid, filter: { paymentStatus: 'ALL' } }, admin);
+        T.assertEqual(all.total, 4,
+          '"ALL" is the explicit way to ask for every status, since omitting the field ' +
+          'already means PENDING');
+      });
+
+      // -----------------------------------------------------------------------
+      // THE SECURITY TEST — DESIGN.md §16 risk 1
+      // -----------------------------------------------------------------------
+
+      T.test('getScreenshot returns bytes and NEVER a Drive id or a Drive URL', function () {
+        // ========================= THE SECURITY TEST =========================
+        // Risk #1 in DESIGN.md §16, rated High, and the most sensitive action in
+        // the system. The screenshot is a bank payment proof living in the
+        // private/payments folder, which is deliberately never shared
+        // (CONTRACTS.md §9 rule 2).
+        //
+        // A DRIVE LINK IS UNAUTHENTICATED. Anyone who ends up holding one — from
+        // a photo of this very screen, a browser history, a shared log, a copied
+        // support email — can read another person's payment proof with no token
+        // at all. So the bytes go out inline as a data: URI and the file id never
+        // leaves the server.
+        //
+        // The assertions below are made against the SERIALISED response, not its
+        // keys, so a future refactor that "helpfully" returns a URL, or tucks the
+        // id inside an allowed object, fails right here.
+        // =====================================================================
+        const f = proof();
+        const res = Suites._call('payment.getScreenshot',
+          { paymentId: f.payment.payment_id }, admin);
+
+        T.assertEqual(Object.keys(res).sort(),
+          ['amount_display', 'bytes', 'dataUri', 'mime', 'player', 'upi_ref'],
+          'the response must be EXACTLY the CONTRACTS-PHASE2 §1 shape. An extra key here ' +
+          'is the leak this test exists to catch.');
+        T.assertEqual(Object.keys(res.player).sort(), ['mobile', 'name', 'serial_no'],
+          'and the nested player object is exactly {serial_no, name, mobile}');
+
+        T.assert(String(res.dataUri).indexOf('data:image/') === 0,
+          'the proof must arrive as inline bytes, got ' + T._trunc(String(res.dataUri), 60));
+        T.assertEqual(res.mime, 'image/jpeg', 'the fixture image is a JPEG');
+        T.assert(typeof res.bytes === 'number' && res.bytes > 0,
+          'bytes must be a positive number so the screen can say "312 KB", got ' +
+          T._fmt(res.bytes));
+        T.assertEqual(res.player.serial_no, 41,
+          'the context the admin checks against the bank statement');
+        T.assertEqual(res.upi_ref, 'ZZPROOFUPIREF41',
+          'the UPI reference is the thing being compared (DESIGN.md §13)');
+
+        const wire = JSON.stringify(res);
+
+        T.assert(wire.indexOf(f.fileId) === -1,
+          'the Drive file id "' + f.fileId + '" is somewhere in the response. Anyone ' +
+          'holding it can read this payment proof without a token (DESIGN.md §16 risk 1).');
+
+        ['drive.google.com', 'docs.google.com', 'googleusercontent.com',
+         'fileId', 'file_id', 'screenshot_file_id', 'thumbnail?id=', 'uc?id=', 'http']
+          .forEach(needle => {
+            T.assert(wire.indexOf(needle) === -1,
+              'the getScreenshot response contains "' + needle + '". The screenshot must ' +
+              'reach the browser ONLY as inline bytes — never as a link, and never as an ' +
+              'id a link can be built from.');
+          });
+
+        // Not even the folder the proof lives in.
+        const trn = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', f.tid);
+        T.assert(!Util.isBlank(trn.drive_folder_id),
+          'precondition: the fixture tournament has a Drive folder');
+        T.assert(wire.indexOf(String(trn.drive_folder_id)) === -1,
+          'the tournament\'s Drive folder id is in the response; that is a route to every ' +
+          'proof in the tournament, not just this one');
+
+        // CONTRACTS-PHASE2 §1 rule 3 and §5. One request, one screenshot, one
+        // auditable access — and no "verify all pending", which would defeat the
+        // entire point of a human checking each reference against a statement.
+        const actions = Object.keys(buildRoutes());
+        T.assert(actions.indexOf('payment.getScreenshots') === -1,
+          'payment.getScreenshots must not exist. A batch route turns one auditable ' +
+          'access into 400 unlogged ones (CONTRACTS-PHASE2 §1 rule 3).');
+        actions.forEach(a => {
+          T.assert(!/screenshots/i.test(a),
+            'a plural screenshot route is registered: "' + a + '". There is no batch ' +
+            'variant by design.');
+          T.assert(!(/^payment\./.test(a) && /(bulk|batch|many|multi|verifyall|rejectall)/i.test(a)),
+            'a bulk payment route is registered: "' + a + '" (CONTRACTS-PHASE2 §5)');
+        });
+
+        // Not asserted, because it is not observable from outside: CONTRACTS-PHASE2
+        // §1 rule 4 also forbids putting the data URI in CacheService. There is no
+        // documented key to look under, and inventing one would test nothing.
+      });
+
+      T.test('getScreenshot is refused to an ORGANISER and to a caller with no token',
+        function () {
+          // Authentication is the DISPATCHER's job (CONTRACTS.md §11 step 4), not
+          // the handler's, so these three come in through the real front door
+          // rather than through Suites._call.
+          const f = proof();
+          const payload = { paymentId: f.payment.payment_id };
+
+          const noToken = Suites._dispatch('payment.getScreenshot', payload, null, 'POST');
+          T.assertEqual(noToken.ok, false,
+            'an anonymous caller must never receive a payment proof');
+          T.assertEqual(noToken.error.code, ERR.UNAUTHORIZED,
+            'no token is UNAUTHORIZED (CONTRACTS.md §3)');
+          T.assert(JSON.stringify(noToken).indexOf(f.fileId) === -1,
+            'and the refusal must not leak the file id either');
+
+          const organiser = Suites._organiserSession('pvorg', f.tid);
+          const asOrganiser = Suites._dispatch(
+            'payment.getScreenshot', payload, organiser.token, 'POST');
+          T.assertEqual(asOrganiser.ok, false,
+            'an ORGANISER must be refused even for their OWN tournament: ' +
+            'CONTRACTS-PHASE2 §1 rule 1 makes this ADMIN only, and a payment proof is a ' +
+            'bank document belonging to a member of the public');
+          T.assertEqual(asOrganiser.error.code, ERR.FORBIDDEN,
+            'a valid token with the wrong role is FORBIDDEN, not UNAUTHORIZED ' +
+            '(CONTRACTS.md §3)');
+          T.assert(JSON.stringify(asOrganiser).indexOf(f.fileId) === -1,
+            'and this refusal must not leak the file id either');
+
+          // The positive control: the same route through the same door DOES work
+          // for an ADMIN, so the two refusals above are not just an action that is
+          // broken for everybody.
+          const asAdmin = Suites._dispatch('payment.getScreenshot', payload, admin.token, 'POST');
+          T.assertEqual(asAdmin.ok, true,
+            'an ADMIN must still be able to do the job, got ' + T._fmt(asAdmin.error));
+          T.assert(String(asAdmin.data.dataUri).indexOf('data:image/') === 0,
+            'and get the bytes back');
+          T.assert(JSON.stringify(asAdmin).indexOf(f.fileId) === -1,
+            'even the successful response must not carry the file id');
+        });
+
+      // -----------------------------------------------------------------------
+      // The mirror-repair path — DESIGN.md §14
+      // -----------------------------------------------------------------------
+
+      T.test('verify repairs a Players mirror that has drifted out of step', function () {
+        // A Payments row that says VERIFIED next to a Players row that still says
+        // PENDING is exactly the drift DESIGN.md §14 warns about: the player paid,
+        // an admin clicked, and the auction pool never heard about it. Reporting
+        // "already verified" and leaving it broken would hide the fault for ever.
+        //
+        // The drift is created directly through Repo, because no action can
+        // produce it — which is the point.
+        const f = freshPayment();
+        const payRow = Repo.findBy(SHEETS.PAYMENTS, 'payment_id', f.payment.payment_id);
+        Repo.updateRow(SHEETS.PAYMENTS, payRow._row, {
+          status: PS.VERIFIED,
+          verified_by: TEST_FIXTURES.ACTOR,
+          verified_at: Util.nowIso()
+        });
+        Repo.flush();
+
+        const before = Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id);
+        T.assertEqual(before.payment_status, PS.PENDING,
+          'precondition: the mirror is broken');
+        T.assertEqual(Players.isAuctionEligible(before), false,
+          'precondition: a paid-up player is being kept out of the pool by the drift');
+
+        const out = Suites._call('payment.verify', { paymentId: f.payment.payment_id }, admin);
+        T.assertEqual(out.alreadyVerified, true,
+          'the payment itself really was already VERIFIED, so this is still the ' +
+          'no-op branch (CONTRACTS-PHASE2 §1 step 2)');
+        T.assertEqual(out.status, PS.VERIFIED, 'and the state comes back');
+
+        const after = Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id);
+        T.assertEqual(after.payment_status, PS.VERIFIED,
+          'the mirror must be REPAIRED, not silently left broken. The auction pool reads ' +
+          'this column, not the Payments tab (DESIGN.md §14), so leaving it at "' +
+          before.payment_status + '" keeps a player who paid out of the auction with ' +
+          'nothing on screen to say why.');
+        T.assertEqual(Players.isAuctionEligible(after), true,
+          'and the player is back in the pool');
+        T.assert(out.counts && typeof out.counts.eligible === 'number',
+          'the repaired state comes back with the counts, got ' + T._fmt(out.counts));
+
+        // CONTRACTS-PHASE2 does not name a response flag for the repair, so the
+        // flag itself is not asserted — only the repaired row, which is what the
+        // auction actually reads.
+
+        // Repairing is idempotent: a third call finds them in step and does nothing.
+        const again = Suites._call('payment.verify', { paymentId: f.payment.payment_id }, admin);
+        T.assertEqual(again.alreadyVerified, true, 'still a no-op');
+        T.assertEqual(
+          Repo.findBy(SHEETS.PLAYERS, 'player_id', f.player.player_id).payment_status,
+          PS.VERIFIED, 'and the mirror stays repaired');
+      });
+
+      // -----------------------------------------------------------------------
+      // The live-auction version bump — DESIGN.md §7, §14
+      // -----------------------------------------------------------------------
+
+      T.test('verifying during a live auction bumps the state version; during registration it does not',
+        function () {
+          // WHY THIS EXISTS: the projector and the organiser console poll a cached
+          // snapshot keyed on the auction state version (DESIGN.md §7). Verifying
+          // a payment changes who is eligible (DESIGN.md §14), so without a bump
+          // the screen keeps showing a stale pool count while the player stands
+          // there waiting to be called. A late verification mid-auction is exactly
+          // when that matters.
+          const live = Suites._seedTournament('pvlive', {
+            withFolders: false, status: ENUM.TOURNAMENT_STATUS.AUCTION_LIVE
+          });
+          const liveRoster = Suites._seedRoster(live.tid,
+            [{ serial_no: 1, name: 'ZZ Late Payer' }]);
+
+          const liveBefore = Cache.getVersion(live.tid);
+          T.assertEqual(typeof liveBefore, 'number',
+            'precondition: the version is a number, got ' + T._fmt(liveBefore));
+
+          Suites._call('payment.verify',
+            { paymentId: liveRoster.payments[0].payment_id }, admin);
+
+          const liveAfter = Cache.getVersion(live.tid);
+          T.assert(liveAfter > liveBefore,
+            'AUCTION_LIVE: the version must move so the projector refetches the pool. ' +
+            'It stayed at ' + liveBefore + '.');
+
+          // The other half. Nothing is polling during registration, so bumping on
+          // every verification would just churn the counter for 400 players.
+          const reg = Suites._seedTournament('pvreg', {
+            withFolders: false, status: ENUM.TOURNAMENT_STATUS.REG_OPEN
+          });
+          const regRoster = Suites._seedRoster(reg.tid,
+            [{ serial_no: 1, name: 'ZZ Early Payer' }]);
+
+          const regBefore = Cache.getVersion(reg.tid);
+          Suites._call('payment.verify',
+            { paymentId: regRoster.payments[0].payment_id }, admin);
+
+          T.assertEqual(Cache.getVersion(reg.tid), regBefore,
+            'REG_OPEN: the version must NOT move. Expected it to stay at ' + regBefore + '.');
+
+          // And the decision itself still landed, so the assertion above is not
+          // passing because verify quietly failed.
+          T.assertEqual(
+            Repo.findBy(SHEETS.PAYMENTS, 'payment_id', regRoster.payments[0].payment_id).status,
+            PS.VERIFIED, 'the payment was still verified either way');
+        });
+    });
+  },
+
+  // ===========================================================================
   // Util
   // ===========================================================================
 
@@ -3210,6 +4826,187 @@ const Suites = {
   },
 
   /**
+   * @private An ORGANISER session scoped to exactly one tournament.
+   *
+   * The same shape as _adminSession, separate because Auth.createUser refuses an
+   * ORGANISER with no tournamentId (an organiser with no scope is an accidental
+   * global admin) and because the Phase 2 tests need both roles side by side.
+   *
+   * @param {string} tag makes the fixture email unique within the run.
+   * @param {string} tournamentId the one tournament this organiser may see.
+   * @return {!Object} the resolved session, with `token` attached
+   */
+  _organiserSession(tag, tournamentId) {
+    const user = Suites._makeUser(
+      Suites._fixtureEmail(tag), 'ZZ ' + tag, ENUM.USER_ROLE.ORGANISER, tournamentId);
+    const login = Auth.login(user.email, TEST_FIXTURES.PASSWORD, 'zz-test-agent');
+    const session = Auth.resolve(login.token);
+    if (!session) {
+      T._fail('could not build an ORGANISER session: Auth.resolve returned null for a ' +
+        'token that Auth.login had just issued');
+    }
+    session.token = login.token;
+    return session;
+  },
+
+  /**
+   * @private Go through the REAL dispatcher, authentication included.
+   *
+   * Suites._call skips authentication deliberately: CONTRACTS.md §11 makes it
+   * dispatch's job, not the handler's, and passing a ready-made session keeps
+   * every other test focused on behaviour. The few tests that are ABOUT
+   * authentication have to come in through the front door instead, because that
+   * is where the role check actually lives.
+   *
+   * @param {string} action e.g. 'payment.getScreenshot'
+   * @param {!Object} payload the request payload
+   * @param {?string} token a session token, or null for "no token at all"
+   * @param {string=} method 'POST' by default
+   * @return {!Object} the CONTRACTS.md §2 envelope. dispatch never throws.
+   */
+  _dispatch(action, payload, token, method) {
+    const envelope = dispatch(action, payload || {}, token || null, method || 'POST', null);
+    T.assert(envelope && typeof envelope === 'object' && typeof envelope.ok === 'boolean',
+      'dispatch must return a CONTRACTS.md §2 envelope, got ' + T._fmt(envelope));
+    if (envelope.ok === false) {
+      T.assert(envelope.error && envelope.error.code,
+        'a failed envelope must carry error.code (CONTRACTS.md §2), got ' + T._fmt(envelope));
+    }
+    return envelope;
+  },
+
+  /**
+   * @private Every AuditLog row about one entity, in the order they were written.
+   *
+   * The trail is append-only (DESIGN.md §42), so "how many rows" and "in what
+   * order" are both assertable facts: a reversal must add a row rather than edit
+   * the first one, and a no-op must add nothing at all.
+   *
+   * @param {string} entityId a player_id or payment_id
+   * @param {?string} action an Audit.ACTIONS value, or null for "any action"
+   * @return {!Array<!Object>} the matching rows, oldest first
+   */
+  _auditRows(entityId, action) {
+    const want = (entityId === null || entityId === undefined) ? '' : String(entityId).trim();
+    return Repo.readAll(SHEETS.AUDIT_LOG).filter(function (r) {
+      const id = (r.entity_id === null || r.entity_id === undefined) ? '' : String(r.entity_id).trim();
+      if (id !== want) return false;
+      return !action || String(r.action).trim() === action;
+    });
+  },
+
+  /**
+   * @private Build (but do not write) one Players row.
+   *
+   * The Phase 2 suites need hundreds of players and care about paging, filtering
+   * and mirroring, not about registration. Going through player.register would
+   * mean three Drive uploads each and several minutes for a run, and would prove
+   * nothing that the Registration suite does not already prove.
+   *
+   * photo_file_id carries TEST_FIXTURES.FAKE_DRIVE_PREFIX so it is non-blank —
+   * the "no file id in a bulk response" assertions search the serialised wire
+   * for the literal value, and searching for '' would pass against anything.
+   *
+   * @param {string} tournamentId the tournament this player belongs to
+   * @param {!Object} spec the fields worth varying; everything else is defaulted
+   * @return {!Object} a Players row object
+   */
+  _playerRow(tournamentId, spec) {
+    const s = spec || {};
+    const serial = Util.toInt(s.serial_no, 0);
+    const name = s.name || ('ZZ Seed ' + Suites._seqLetters());
+    const role = s.role || ENUM.PLAYER_ROLE.BATSMAN;
+    const style = s.style || ENUM.PLAYER_STYLE.RIGHT;
+    const photoId = TEST_FIXTURES.FAKE_DRIVE_PREFIX + 'photo' + T.nextSeq();
+    return {
+      player_id: s.player_id || Util.uid(ID_PREFIX.PLAYER),
+      tournament_id: tournamentId,
+      serial_no: serial,
+      name: name,
+      dob: s.dob || '1998-04-12',
+      age_years: (s.age_years === undefined) ? 28 : s.age_years,
+      role: role,
+      style: style,
+      mobile: s.mobile || Suites._freshMobile(),
+      photo_file_id: photoId,
+      photo_thumb_url: Drive.thumbUrl(photoId, 320),
+      payment_status: s.payment_status || ENUM.PAYMENT_STATUS.PENDING,
+      auction_status: s.auction_status || ENUM.AUCTION_STATUS.PENDING,
+      times_called: 0,
+      team_id: s.team_id || '',
+      // Blank, not 0: "never sold" and "sold for nothing" are different facts.
+      sold_amount: (s.sold_amount === undefined) ? '' : s.sold_amount,
+      sold_at: '',
+      is_withdrawn: s.is_withdrawn === true,
+      search_blob: (name + ' ' + role + ' ' + style).toLowerCase(),
+      registered_at: s.registered_at || Util.nowIso()
+    };
+  },
+
+  /**
+   * @private Build (but do not write) the Payments row for a seeded player.
+   *
+   * `status` MIRRORS the player's payment_status by default. Payments.gs is the
+   * only writer of both in production and it writes them inside one lock
+   * (CONTRACTS-PHASE2 §1 step 5), so a fixture that started them out of step
+   * would be testing a state the system cannot produce. `payment_row_status` is
+   * the deliberate escape hatch for the one test that breaks the mirror on
+   * purpose.
+   *
+   * @param {string} tournamentId the tournament
+   * @param {!Object} playerRow the player this payment belongs to
+   * @param {!Object} spec the same spec object the player was built from
+   * @return {!Object} a Payments row object
+   */
+  _paymentRow(tournamentId, playerRow, spec) {
+    const s = spec || {};
+    return {
+      payment_id: s.payment_id || Util.uid(ID_PREFIX.PAYMENT),
+      tournament_id: tournamentId,
+      player_id: playerRow.player_id,
+      upi_ref: s.upi_ref || Suites._freshUpiRef(),
+      amount: (s.amount === undefined) ? 500 : s.amount,
+      screenshot_file_id: (s.screenshot_file_id === undefined)
+        ? TEST_FIXTURES.FAKE_DRIVE_PREFIX + 'shot' + T.nextSeq()
+        : s.screenshot_file_id,
+      status: s.payment_row_status || s.payment_status || ENUM.PAYMENT_STATUS.PENDING,
+      verified_by: s.verified_by || '',
+      verified_at: s.verified_at || '',
+      reject_reason: s.reject_reason || '',
+      submitted_at: s.submitted_at || playerRow.registered_at
+    };
+  },
+
+  /**
+   * @private Seed a whole roster: one Players row and one Payments row per spec,
+   * in two setValues() calls rather than two per player.
+   *
+   * Every fixture tournament here carries TEST_FIXTURES.TID_PREFIX, so the
+   * existing T.cleanup() purge finds and deletes both tabs' rows by
+   * tournament_id without any extra bookkeeping.
+   *
+   * @param {string} tournamentId the tournament
+   * @param {!Array<!Object>} specs one spec per player
+   * @return {{players: !Array<!Object>, payments: !Array<!Object>,
+   *           bySerial: !Object}} the written rows, with _row set
+   */
+  _seedRoster(tournamentId, specs) {
+    const list = specs || [];
+    if (!list.length) return { players: [], payments: [], bySerial: {} };
+
+    const players = Repo.appendMany(SHEETS.PLAYERS,
+      list.map(s => Suites._playerRow(tournamentId, s)));
+    const payments = Repo.appendMany(SHEETS.PAYMENTS,
+      players.map((p, i) => Suites._paymentRow(tournamentId, p, list[i])));
+
+    const bySerial = {};
+    players.forEach((p, i) => {
+      bySerial[p.serial_no] = { player: p, payment: payments[i] };
+    });
+    return { players: players, payments: payments, bySerial: bySerial };
+  },
+
+  /**
    * @private A valid `tournament.create` payload. Overrides are applied on top,
    * including explicit nulls, so a rejection test can spoil exactly one field.
    * @param {string} tag
@@ -3623,8 +5420,8 @@ function runAllTests() {
  * Subject to the same env guard as runAllTests — there is no "just this one
  * suite" exemption, because every suite writes rows.
  *
- * @param {string} suiteName one of Util, IST, Tournament, Registration, Repo,
- *     Auth, Cache, Drive.
+ * @param {string} suiteName one of Util, IST, Tournament, Registration,
+ *     PlayerList, PaymentVerify, Repo, Auth, Cache, Drive.
  * @return {!Object} {total, passed, failed, elapsedMs, failures}
  */
 function runTest(suiteName) {

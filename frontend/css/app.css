@@ -47,8 +47,20 @@
                    .dialog__body  .dialog__actions
      data          .table  .table__wrap  .table th/td  .table--compact
                    .is-numeric
-                   .kv  .badge  .code  .status  .status--pending/--sold/--unsold
+                   .kv  .badge  .code  .code--inline
+                   .status  .status--pending/--sold/--unsold
+                   .status--verified/--rejected/--withdrawn
      chrome        .route-nav  .route-nav__list  .route-nav__link
+                   .admin-nav  .admin-nav__bar  .admin-nav__scope
+                   .admin-nav__scope--none  .admin-nav__scope--unknown
+                   .admin-nav__scope-label  .admin-nav__scope-mark
+                   .admin-nav__scope-name  .admin-nav__scope-id
+                   .admin-nav__change  .admin-nav__warning
+                   .admin-nav__list  .admin-nav__item  .admin-nav__link
+                   .admin-nav__link--active  .admin-nav__signout
+                   .admin-picker  .admin-picker__list  .admin-picker__item
+                   .admin-picker__link  .admin-picker__name
+                   .admin-picker__meta
                    .visually-hidden  .reveal
      projector     everything under body[data-route="display"]
 
@@ -66,6 +78,22 @@
    admin-only tuning (scope under body[data-route="admin-login"] or
    body[data-route="admin-dashboard"]).
 
+   Owned by css/payments.css — the Phase 2 payment queue only: the filter
+   bar, the queue/detail split, the big monospace UPI reference and its copy
+   control, the screenshot viewer and its full-screen zoom, the reject-reason
+   form, and the keyboard-shortcut hints. Scope page-only tuning under
+   body[data-route="admin-payments"].
+
+   Owned by css/players.css — the Phase 2 player register only: the wide
+   register table and its column widths, the filter/search row, the per-row
+   withdraw control and the paging strip. Scope page-only tuning under
+   body[data-route="admin-players"].
+
+   The shared admin nav (.admin-nav*) belongs HERE and only here. All three
+   admin screens draw it from App.adminNav(), so a second definition in a
+   page stylesheet would make the same bar look different depending on which
+   screen you were on — which is precisely how an admin stops reading it.
+
    Rule of thumb: if a second page would plausibly want it, it belongs
    here. Later phases must reuse these names rather than invent parallel
    ones — two vocabularies for the same button is how a stylesheet rots.
@@ -81,7 +109,7 @@
      7. Status pills — colour + word + shape, never colour alone
      8. Feedback: spinner, progress, dialog
      9. Data: tables, badges, code, empty states
-    10. Landing chrome
+    10. Chrome: the landing link list and the shared admin nav
     11. Projector theme, scoped to [data-route="display"]
     12. Accessibility preferences
    ========================================================================== */
@@ -113,6 +141,23 @@
   --status-unsold-bg:   #475569;   /* slate */
   --status-unsold-fg:   #FFFFFF;
   --status-unsold-mark: "\2715";   /* ✕ cross */
+
+  /* --- Phase 2 payment statuses (CONTRACTS-PHASE2.md §6.1/§6.2) ---------
+     Same rule: colour is the third signal. VERIFIED reuses the SOLD green
+     because "this one is settled" means the same thing in both places, but
+     REJECTED and WITHDRAWN get their own shapes so the three payment states
+     stay apart in greyscale and on a washed-out projector. */
+  --status-verified-bg:   #15803D;   /* green, as SOLD */
+  --status-verified-fg:   #FFFFFF;
+  --status-verified-mark: "\2713";   /* ✓ tick */
+
+  --status-rejected-bg:   #B3261E;   /* red; white on it is ~6.4:1 */
+  --status-rejected-fg:   #FFFFFF;
+  --status-rejected-mark: "\2716";   /* ✖ heavy cross, not the ✕ of UN-SOLD */
+
+  --status-withdrawn-bg:   #334155;  /* darker slate than UN-SOLD */
+  --status-withdrawn-fg:   #FFFFFF;
+  --status-withdrawn-mark: "\25A0";  /* ■ filled square */
 
   /* --- Light theme, used by registration and admin --------------------- */
   --bg:            #F7F9FB;
@@ -838,6 +883,25 @@ a {
   color: var(--status-unsold-fg);
 }
 
+/* Phase 2 payment states. Same pill, same rules. */
+.status--verified {
+  --status-mark: var(--status-verified-mark);  /* ✓ tick */
+  background: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+}
+
+.status--rejected {
+  --status-mark: var(--status-rejected-mark);  /* ✖ heavy cross */
+  background: var(--status-rejected-bg);
+  color: var(--status-rejected-fg);
+}
+
+.status--withdrawn {
+  --status-mark: var(--status-withdrawn-mark); /* ■ square */
+  background: var(--status-withdrawn-bg);
+  color: var(--status-withdrawn-fg);
+}
+
 
 /* -----------------------------------------------------------------------
    8. Feedback — spinner, progress, dialog.
@@ -1096,6 +1160,16 @@ dialog.dialog:not([open]) { display: none; }
   user-select: all;
 }
 
+/* The same monospace treatment inside a sentence or a bar: a tournament id
+   beside its name, a UPI id in a table cell. Still select-all, because the
+   point of showing an id is that someone copies it. */
+.code--inline {
+  display: inline;
+  padding: 0.1em 0.45em;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
 /* "No tournaments yet." Never leave a blank region — a blank region reads
    as a failed load. */
 .empty {
@@ -1106,8 +1180,10 @@ dialog.dialog:not([open]) { display: none; }
 
 
 /* -----------------------------------------------------------------------
-   10. Landing chrome — the short link list on '/' only.
+   10. Chrome — the landing link list, and the shared admin nav.
    -------------------------------------------------------------------- */
+
+/* --- 10a. The short link list on '/' only. --------------------------- */
 
 .route-nav__list {
   margin: 0;
@@ -1121,6 +1197,192 @@ dialog.dialog:not([open]) { display: none; }
   min-height: var(--tap);
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--line);
+}
+
+
+/* --- 10b. The shared admin nav. CONTRACTS-PHASE2.md §6.3. ------------
+
+   Built by App.adminNav() and drawn on all three admin screens
+   (tournaments, payments, players).
+
+   THE POINT OF THIS BAR IS THE TOURNAMENT NAME. Every Phase 2 action is
+   scoped to one tournament; an admin verifying payments against the wrong
+   one gets no error, no warning and no way back. So .admin-nav__scope is
+   the biggest, first and loudest thing here — bigger than the tab links,
+   on its own line on a phone, tinted, and with a thick left edge that the
+   eye lands on before it reads anything. The tabs are deliberately quieter.
+
+   Three states, each with a glyph and a word as well as a tint, so none of
+   them depends on colour (DESIGN.md §8):
+     (default)                  ● Working on        <name>
+     .admin-nav__scope--none    ⚠ No tournament selected
+     .admin-nav__scope--unknown ● Not one of your tournaments   + a warning
+   -------------------------------------------------------------------- */
+
+.admin-nav {
+  max-width: 60rem;              /* lines up with .panel--wide */
+  margin: 0 auto var(--space-4);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* app.js mounts its own copy ABOVE #app when the page module did not ask
+   for one, so that copy sits outside .app's padding and has to supply its
+   own gutters. A page that renders the nav inside its own panel gets the
+   plain rule above instead. */
+.admin-nav[data-chrome-nav] {
+  width: min(60rem, calc(100% - 2 * var(--space-4)));
+  margin: var(--space-4) auto 0;
+}
+
+.admin-nav__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.admin-nav__scope {
+  /* Full width on a phone: this is a headline, not a chip. */
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  border-left: 6px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--info-bg);
+}
+
+.admin-nav__scope-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4em;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.admin-nav__scope-mark { font-size: 0.9em; line-height: 1; }
+
+.admin-nav__scope-name {
+  /* Larger than the tab links on purpose. If only one thing on this bar is
+     read, it has to be this. */
+  font-size: 1.25rem;
+  line-height: 1.25;
+  font-weight: 700;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.admin-nav__scope-id { color: var(--ink-muted); }
+
+/* Pushed to the far end so it never gets tapped instead of the name. */
+.admin-nav__change { margin-left: auto; }
+
+.admin-nav__scope--none {
+  background: var(--warning-bg);
+  border-left-color: var(--warning);
+}
+
+.admin-nav__scope--none .admin-nav__scope-label { color: var(--warning); }
+
+.admin-nav__scope--unknown {
+  background: var(--danger-bg);
+  border-left-color: var(--danger);
+}
+
+.admin-nav__scope--unknown .admin-nav__scope-label,
+.admin-nav__scope--unknown .admin-nav__scope-name { color: var(--danger); }
+
+.admin-nav__warning {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.admin-nav__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-nav__link {
+  display: inline-flex;
+  align-items: center;
+  /* Tapped, not just read (DESIGN.md §49). */
+  min-height: var(--tap);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.admin-nav__link--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Shape as well as fill, so "you are here" survives greyscale printing and
+   forced-colors mode. */
+.admin-nav__link--active::before {
+  content: "\25B8";                /* ▸ */
+  margin-right: 0.4em;
+}
+
+.admin-nav__signout { margin-left: auto; }
+
+@media (min-width: 48rem) {
+  /* Wide enough for the indicator and the tabs to share one row. It keeps
+     its size advantage over the tabs either way. */
+  .admin-nav__scope { flex: 1 1 26rem; }
+}
+
+
+/* --- 10c. The tournament picker app.js shows when nothing is selected. */
+
+.admin-picker__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-picker__link {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-1);
+  min-height: var(--tap);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.admin-picker__item + .admin-picker__item { margin-top: var(--space-2); }
+
+.admin-picker__name { font-size: 1.125rem; font-weight: 700; }
+
+.admin-picker__meta {
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
 }
 
 
@@ -1241,6 +1503,11 @@ body[data-route="display"] a { color: var(--proj-ink); }
 
 body[data-route="display"] .route-nav { display: none; }
 
+/* The admin nav can never legitimately appear on the projector, but if a
+   future screen ever mounted one it must not be the thing a hall of people
+   reads. */
+body[data-route="display"] .admin-nav { display: none; }
+
 /* Reveal: a short fade only. DESIGN.md §8 — no spin, no bounce; motion on a
    projector reads as lag, not polish. */
 body[data-route="display"] .reveal {
@@ -1287,10 +1554,19 @@ body[data-route="display"] .reveal {
   .file__button { border: 2px solid ButtonText; }
   .progress__bar { border: 1px solid CanvasText; }
   .dialog__box   { border: 2px solid CanvasText; }
+  /* The tint goes; the ▸ on the active tab and the ● / ⚠ on the tournament
+     indicator are what still say which is which. */
+  .admin-nav       { border: 1px solid CanvasText; }
+  .admin-nav__scope { border: 1px solid CanvasText; border-left-width: 4px; }
+  .admin-nav__link { border: 2px solid ButtonText; }
+  .admin-picker__link { border: 1px solid CanvasText; }
 }
 
 @media print {
   .route-nav, .banner, .toolbar, .btn, .dialog { display: none; }
+  /* Keep the nav's tournament line on a printout — a printed payment list
+     with no tournament name on it is evidence of nothing. */
+  .admin-nav__list, .admin-nav__signout, .admin-nav__change { display: none; }
   body { background: #FFFFFF; color: #000000; }
-  .panel, .card, .table__wrap { border: 0; }
+  .panel, .card, .table__wrap, .admin-nav { border: 0; }
 }

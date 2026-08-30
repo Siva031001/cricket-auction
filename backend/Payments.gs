@@ -212,21 +212,18 @@ const Payments = {
    * @return {{all:number, pending:number, verified:number, rejected:number,
    *           withdrawn:number, eligible:number}} the counts
    */
-  _counts(playerRows) {
-    const out = { all: 0, pending: 0, verified: 0, rejected: 0, withdrawn: 0, eligible: 0 };
-    for (let i = 0; i < playerRows.length; i++) {
-      const row = playerRows[i];
-      // Every registration counts, including withdrawn ones: `all` is a record
-      // of what arrived, and `withdrawn` is reported separately.
-      out.all++;
-      const status = Payments._str(row.payment_status);
-      if (status === ENUM.PAYMENT_STATUS.PENDING) out.pending++;
-      else if (status === ENUM.PAYMENT_STATUS.VERIFIED) out.verified++;
-      else if (status === ENUM.PAYMENT_STATUS.REJECTED) out.rejected++;
-      if (row.is_withdrawn === true) out.withdrawn++;
-      if (Players.isAuctionEligible(row)) out.eligible++;
-    }
-    return out;
+  _counts(tournamentId, playerRows) {
+    // Delegates to the single definition in Players.gs (CONTRACTS-PHASE2 §3).
+    //
+    // This used to be a second implementation here. It produced identical
+    // numbers, which is exactly what makes a duplicated rule dangerous: it
+    // agrees right up until someone changes one copy. The counts and the
+    // eligibility predicate (§2) decide who reaches the auction, so there is
+    // one writer for both.
+    //
+    // Players.counts filters by tournament itself, so passing rows that are
+    // already filtered is safe and saves the extra Repo.readAll.
+    return Players.counts(tournamentId, playerRows);
   },
 
   /**
@@ -370,7 +367,7 @@ const Payments = {
       pageSize: pageSize,
       total: total,
       totalPages: totalPages,
-      counts: Payments._counts(playerRows)
+      counts: Payments._counts(tournamentId, playerRows)
     };
   },
 
@@ -827,7 +824,7 @@ const Payments = {
     // whole tournament and nothing depends on them being atomic with the write,
     // so holding the script-wide lock for them would slow every other admin down
     // for no gain.
-    const counts = Payments._counts(Payments._playersOf(outcome.tournamentId));
+    const counts = Payments._counts(outcome.tournamentId, Payments._playersOf(outcome.tournamentId));
 
     const out = {
       payment_id: Payments._str(outcome.payment.payment_id),

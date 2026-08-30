@@ -35,6 +35,7 @@ function buildRoutes() {
   return Object.assign({},
     AuthRoutes(),
     TournamentRoutes(),
+    OrganiserRoutes(),
     PlayerRoutes(),
     PaymentRoutes(),
     TeamRoutes(),
@@ -53,8 +54,11 @@ function buildRoutes() {
  * auth.logout needs the raw token; it reads it off session.token, which
  * Auth.resolve puts there, rather than widening the handler signature.
  *
- * PHASE 3 will add: auth.organiserLink (one-time invite token -> real session,
- * DESIGN.md §5.4). It is not in Phase 0 because organiser onboarding is not built.
+ * PHASE 3 added auth.organiserJoin: it exchanges a one-time invite token for a
+ * real session and sets the organiser's password (DESIGN.md §5.4). It is PUBLIC
+ * because the organiser has no account to sign in with yet — the invite token in
+ * the payload is the credential. tools/check.js pins the public list, so this is
+ * a deliberate entry there too.
  *
  * @return {!Object} route table fragment
  */
@@ -72,6 +76,25 @@ function AuthRoutes() {
         // own user agent in the body. It is untrusted and used for audit only.
         const ua = payload.ua || payload.userAgent || '';
         return Auth.login(payload.email, payload.password, ua);
+      }
+    },
+
+    'auth.organiserJoin': {
+      auth: 'PUBLIC',
+      methods: ['POST'],
+      /**
+       * PUBLIC on purpose: the organiser has no account yet, so there is no
+       * session token to authenticate with. The one-time join token in the
+       * payload IS the credential, and Auth.redeemJoinToken burns it in the same
+       * locked section that sets the password.
+       *
+       * @param {!Object} payload {token, password, ua} — `token` here is the
+       *     one-time join token from the link, not a session token.
+       * @return {!Object} {token, expiresAt, user} — the same shape as auth.login
+       */
+      handler: (payload) => {
+        const ua = payload.ua || payload.userAgent || '';
+        return Auth.redeemJoinToken(payload.token, payload.password, ua);
       }
     },
 

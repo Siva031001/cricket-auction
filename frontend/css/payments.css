@@ -1,0 +1,796 @@
+/* =============================================================================
+   payments.css — the payment verification queue, /admin/payments, only.
+
+   Owned by the payments page agent. app.css (tokens, .btn, .field, .status,
+   .banner, .badge, .empty, .kv) and admin.css (.admin__head, .admin__actions,
+   .admin__errors) are owned by other agents and are NOT edited here: every
+   selector below is scoped to body[data-route="admin-payments"], and nothing
+   redefines a shared control — it only lays one out.
+
+   THE SCREEN THIS IS FOR
+   An admin sits with a bank statement open and works a queue of up to 400
+   payments, one at a time. Two things follow, and they shape every rule below.
+
+     1. DESKTOP FIRST. This job is done on a laptop, with the list on the left
+        and the payment on the right, so the admin never loses their place.
+        app.css is mobile-first, so the phone layout is already the default
+        here; the wide behaviour is added at (min-width: 60em) and, below that,
+        an open payment REPLACES the list (CONTRACTS-PHASE2 §6.1).
+
+     2. THE UPI REFERENCE IS THE PRODUCT. It is set large, monospace and
+        letter-spaced because it is compared character by character against a
+        bank statement. Small proportional text is how a 0 becomes an O, and a
+        mistake here is somebody's ₹500. Section 8 is not decoration.
+
+   Contents
+     1. Panel and header
+     2. Counts strip
+     3. Keyboard legend
+     4. Filters
+     5. Two-pane layout
+     6. The queue
+     7. Payment detail — frame
+     8. Payment detail — the UPI reference
+     9. Payment detail — the screenshot
+    10. Payment detail — the decision
+    11. Full-screen screenshot
+    12. Payment status pills
+    13. Tournament chooser and empty states
+    14. Accessibility preferences and print
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Panel and header
+
+   app.css caps .panel at 34rem, which is right for a phone form and far too
+   narrow for a list beside a detail pane.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .panel.pay {
+  max-width: 84rem;
+}
+
+/* Which tournament this queue belongs to. Every action on this screen is
+   tournament-scoped, and verifying against the wrong tournament is a real and
+   unrecoverable mistake (CONTRACTS-PHASE2 §6.3), so the name is loud. */
+body[data-route="admin-payments"] .pay-scope {
+  margin: var(--space-2) 0 0;
+  font-size: 1.0625rem;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-scope__name {
+  color: var(--ink);
+  font-size: 1.1875rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Counts strip — "42 of 400 remaining"
+
+   A live region (aria-live="polite" is set in JS). It is updated straight
+   from the counts object that payment.verify and payment.reject return
+   (CONTRACTS-PHASE2 §3), so it never costs an extra request.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-counts:empty { display: none; }
+
+body[data-route="admin-payments"] .pay-counts {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+body[data-route="admin-payments"] .pay-counts__headline {
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+body[data-route="admin-payments"] .pay-counts__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+body[data-route="admin-payments"] .pay-counts__chip {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The decision result. Also a live region; empty until the first decision. */
+body[data-route="admin-payments"] .pay-result:empty { display: none; }
+body[data-route="admin-payments"] .pay-result { margin-bottom: var(--space-4); }
+
+
+/* -----------------------------------------------------------------------
+   3. Keyboard legend
+
+   On the page, never behind a help modal (CONTRACTS-PHASE2 §6.1 rule 8). A
+   shortcut nobody can see is a shortcut nobody uses.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+}
+
+body[data-route="admin-payments"] .pay-keys__title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-keys__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+body[data-route="admin-payments"] .pay-keys__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.9375rem;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-keys__key {
+  display: inline-block;
+  min-width: 2.25em;
+  padding: 0.15em 0.5em;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 3px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+body[data-route="admin-payments"] .pay-keys__toggle {
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+body[data-route="admin-payments"] .pay-keys__note {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   4. Filters
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+body[data-route="admin-payments"] .pay-filters .field {
+  flex: 0 1 24rem;
+  margin-bottom: 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   5. Two-pane layout
+
+   Phone (the default): one column. When a payment is open, the detail
+   REPLACES the list, because a 6-inch screen cannot show both and the payment
+   is what the admin came for.
+
+   Laptop (>= 60em): list on the left, payment on the right, both visible, so
+   the position in the queue is never lost.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+body[data-route="admin-payments"] .pay-layout--open .pay-pane--list { display: none; }
+
+body[data-route="admin-payments"] .pay-pane--detail:empty { display: none; }
+
+@media (min-width: 60em) {
+  body[data-route="admin-payments"] .pay-layout {
+    grid-template-columns: minmax(20rem, 26rem) 1fr;
+    align-items: start;
+  }
+
+  /* Both panes at once on a laptop, so the detail never hides the queue. */
+  body[data-route="admin-payments"] .pay-layout--open .pay-pane--list { display: block; }
+
+  /* The queue scrolls on its own; the payment beside it stays put. */
+  body[data-route="admin-payments"] .pay-pane--list {
+    position: sticky;
+    top: var(--space-4);
+    max-height: calc(100vh - 4rem);
+    overflow-y: auto;
+  }
+
+  /* "Back to the queue" is a phone control: on a laptop the queue never left. */
+  body[data-route="admin-payments"] .pay-detail__back { display: none; }
+}
+
+
+/* -----------------------------------------------------------------------
+   6. The queue
+
+   One button per payment, not a table row: every entry is then reachable with
+   Tab, works with Enter and Space for free, and can carry aria-current.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-list__count {
+  margin: 0 0 var(--space-2);
+  font-size: 0.9375rem;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-list__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+body[data-route="admin-payments"] .pay-list__item + .pay-list__item {
+  border-top: 1px solid var(--line);
+}
+
+body[data-route="admin-payments"] .pay-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  width: 100%;
+  /* 48px minimum tap target (DESIGN.md §12) — these get tapped, not just read. */
+  min-height: var(--tap);
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+body[data-route="admin-payments"] .pay-row:hover { background: var(--bg); }
+
+/* The open row. A left bar as well as a background tint, so the selection
+   survives greyscale and a washed-out screen (DESIGN.md §8). */
+body[data-route="admin-payments"] .pay-row--open {
+  background: var(--info-bg);
+  box-shadow: inset 4px 0 0 0 var(--accent);
+}
+
+body[data-route="admin-payments"] .pay-row__serial {
+  font-family: var(--font-mono);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="admin-payments"] .pay-row__mid {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+body[data-route="admin-payments"] .pay-row__name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Even in the list the reference is monospace: it is what the admin scans for. */
+body[data-route="admin-payments"] .pay-row__ref {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route="admin-payments"] .pay-row__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+  text-align: right;
+}
+
+body[data-route="admin-payments"] .pay-row__amount {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="admin-payments"] .pay-row__dup {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--warning);
+}
+
+body[data-route="admin-payments"] .pay-paging {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+body[data-route="admin-payments"] .pay-paging .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="admin-payments"] .pay-paging__label {
+  font-size: 0.9375rem;
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Payment detail — frame
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-detail {
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="admin-payments"] .pay-detail__back {
+  width: auto;
+  margin: 0 0 var(--space-3);
+}
+
+body[data-route="admin-payments"] .pay-detail__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+body[data-route="admin-payments"] .pay-detail__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: 0;
+  font-size: 1.375rem;
+  line-height: 1.2;
+}
+
+/* The serial number is how a player is identified out loud, at the desk and
+   on the projector, so it is the biggest thing in the heading. */
+body[data-route="admin-payments"] .pay-detail__serial {
+  font-family: var(--font-mono);
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="admin-payments"] .pay-detail__name { font-weight: 700; }
+
+/* possible_duplicate_of. A question, never an accusation (DESIGN.md §15
+   case 15) — amber, not red, and it never blocks anything. */
+body[data-route="admin-payments"] .pay-dup {
+  margin-bottom: var(--space-4);
+}
+
+body[data-route="admin-payments"] .pay-detail__facts {
+  margin: 0 0 var(--space-5);
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Payment detail — THE UPI REFERENCE
+
+   CONTRACTS-PHASE2 §6.1 rule 1. This is the string being matched character by
+   character against a bank statement, and the single most important thing on
+   the screen.
+
+     monospace        so 0/O and 1/l/I are different shapes
+     letter-spacing   so two adjacent characters never merge
+     large            so it is readable without leaning in
+     break-all        so a 35-character reference never silently truncates —
+                      a hidden tail is a reference the admin cannot check
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-upi {
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="admin-payments"] .pay-upi__label {
+  margin: 0 0 var(--space-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-upi__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+body[data-route="admin-payments"] .pay-upi__value {
+  flex: 1 1 16rem;
+  margin: 0;
+  font-family: var(--font-mono);
+  /* Big on a laptop, still big on a phone, never wider than the box. */
+  font-size: clamp(1.5rem, 1rem + 2.2vw, 2.25rem);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  /* Selectable in one gesture, for the admin who pastes it into a search box. */
+  user-select: all;
+}
+
+body[data-route="admin-payments"] .pay-upi .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="admin-payments"] .pay-upi__hint {
+  margin: var(--space-2) 0 0;
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Payment detail — the screenshot
+
+   Loaded only when a row is opened, one payment.getScreenshot per view, and
+   never prefetched (CONTRACTS-PHASE2 §6.1 rule 2). It arrives as a data: URI;
+   there is no Drive URL anywhere in this app (DESIGN.md §16 risk 1).
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-shot {
+  margin-bottom: var(--space-5);
+}
+
+body[data-route="admin-payments"] .pay-shot__title {
+  margin: 0 0 var(--space-1);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-shot__note {
+  margin: 0 0 var(--space-3);
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+/* The thumbnail is a real <button>, so the zoom is reachable from the
+   keyboard and announced as an action rather than as an image. */
+body[data-route="admin-payments"] .pay-shot__zoom {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+body[data-route="admin-payments"] .pay-shot__img {
+  width: 100%;
+  max-height: 32rem;
+  object-fit: contain;
+  background: var(--bg);
+}
+
+body[data-route="admin-payments"] .pay-shot__meta {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Payment detail — the decision
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-decide {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+body[data-route="admin-payments"] .pay-decide__title {
+  margin: 0 0 var(--space-3);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-decide__reason {
+  margin-bottom: var(--space-3);
+}
+
+body[data-route="admin-payments"] .pay-decide__count {
+  margin: var(--space-1) 0 0;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-payments"] .pay-decide__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+body[data-route="admin-payments"] .pay-decide__buttons .btn {
+  flex: 1 1 14rem;
+  /* These two are pressed hundreds of times in an evening; make them big. */
+  min-height: 3.25rem;
+  margin-top: 0;
+  font-size: 1.0625rem;
+}
+
+/* Reject with no reason yet. The disabled look must be obviously "not yet",
+   not "broken" — the hint above it says what to do. */
+body[data-route="admin-payments"] .pay-decide__reject[disabled] {
+  opacity: 0.55;
+}
+
+body[data-route="admin-payments"] .pay-decide__already {
+  margin: var(--space-3) 0 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--warning);
+}
+
+/* Undo is not a feature (CONTRACTS-PHASE2 §6.1 rule 7). Saying so on the
+   screen is what stops somebody asking for one. */
+body[data-route="admin-payments"] .pay-decide__noundo {
+  margin: var(--space-3) 0 0;
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   11. Full-screen screenshot
+
+   CONTRACTS-PHASE2 §6.1 rule 3. A UPI reference printed inside a payment app
+   screenshot is often a few pixels tall, and reading it is the whole job.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: var(--scrim);
+}
+
+body[data-route="admin-payments"] .pay-zoom__box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 100%;
+  max-height: 100%;
+}
+
+body[data-route="admin-payments"] .pay-zoom__close {
+  align-self: flex-end;
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="admin-payments"] .pay-zoom__img {
+  max-width: 100%;
+  /* Leave room for the close button and the hint on a short laptop screen. */
+  max-height: calc(100vh - 10rem);
+  object-fit: contain;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+body[data-route="admin-payments"] .pay-zoom__hint {
+  margin: 0;
+  color: #FFFFFF;
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+
+/* -----------------------------------------------------------------------
+   12. Payment status pills
+
+   The .status base class in app.css supplies the shape, the pill geometry and
+   the uppercase word; only the payment-specific colours live here, and only
+   as a --status-mark plus a fill. Colour is the third signal, never the first
+   (DESIGN.md §8).
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-status {
+  font-size: 0.8125rem;
+}
+
+body[data-route="admin-payments"] .pay-status--pending {
+  --status-mark: var(--status-pending-mark);   /* ● still to check */
+  background: var(--status-pending-bg);
+  color: var(--status-pending-fg);
+}
+
+body[data-route="admin-payments"] .pay-status--verified {
+  --status-mark: var(--status-sold-mark);      /* ✓ checked and accepted */
+  background: var(--status-sold-bg);
+  color: var(--status-sold-fg);
+}
+
+body[data-route="admin-payments"] .pay-status--rejected {
+  --status-mark: "\2715";                      /* ✕ checked and refused */
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+
+/* A status this build has never heard of. Loud, because it means the two ends
+   disagree about the vocabulary and somebody needs to look. */
+body[data-route="admin-payments"] .pay-status--unknown {
+  --status-mark: "\003F";                      /* ? */
+  background: var(--warning);
+  color: #FFFFFF;
+}
+
+
+/* -----------------------------------------------------------------------
+   13. Tournament chooser and empty states
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-payments"] .pay-picker__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+body[data-route="admin-payments"] .pay-picker__list li + li {
+  margin-top: var(--space-2);
+}
+
+body[data-route="admin-payments"] .pay-picker__btn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  margin-top: 0;
+  text-align: left;
+}
+
+body[data-route="admin-payments"] .pay-picker__meta {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+/* An empty queue is the GOOD outcome, so it reads as an achievement rather
+   than as a failed load. */
+body[data-route="admin-payments"] .pay-empty__title {
+  margin: 0 0 var(--space-2);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+body[data-route="admin-payments"] .pay-empty__note {
+  margin: 0 auto var(--space-3);
+  max-width: 34rem;
+}
+
+body[data-route="admin-payments"] .pay-empty .btn { width: auto; }
+
+body[data-route="admin-payments"] .pay-detail__idle {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+}
+
+/* app.css makes .btn full width, which is right on a phone form and wrong in
+   a toolbar. admin.css already does this for .admin__actions; the chooser and
+   the copy button need the same. */
+body[data-route="admin-payments"] .pay-copy { margin-top: 0; }
+
+
+/* -----------------------------------------------------------------------
+   14. Accessibility preferences and print
+   -------------------------------------------------------------------- */
+
+/* Never remove the focus ring: this whole screen is driven from the keyboard.
+   On the open row and inside the zoom the background is dark or tinted, so the
+   ring gets extra separation rather than less. */
+body[data-route="admin-payments"] .pay-row:focus-visible,
+body[data-route="admin-payments"] .pay-shot__zoom:focus-visible,
+body[data-route="admin-payments"] .pay-detail__title:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+
+@media (forced-colors: active) {
+  /* In a forced-colours theme the tint disappears, so the open row needs a
+     border that the theme cannot remove. */
+  body[data-route="admin-payments"] .pay-row--open {
+    border-left: 4px solid Highlight;
+  }
+  body[data-route="admin-payments"] .pay-keys__key {
+    border: 1px solid ButtonText;
+  }
+}
+
+@media print {
+  /* Printing this screen is a reasonable thing to do with a dispute in hand:
+     keep the reference, the facts and the screenshot, drop the controls. */
+  body[data-route="admin-payments"] .pay-keys,
+  body[data-route="admin-payments"] .pay-filters,
+  body[data-route="admin-payments"] .pay-paging,
+  body[data-route="admin-payments"] .pay-decide__buttons,
+  body[data-route="admin-payments"] .pay-detail__back,
+  body[data-route="admin-payments"] .admin__actions,
+  body[data-route="admin-payments"] .pay-zoom { display: none; }
+
+  body[data-route="admin-payments"] .pay-layout {
+    grid-template-columns: 1fr;
+  }
+}

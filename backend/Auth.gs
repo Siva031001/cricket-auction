@@ -23,6 +23,22 @@ const Auth = {
   /** Minimum password length (DESIGN §16 risk 6). */
   MIN_PASSWORD_LEN: 10,
 
+  /**
+   * Generic message for every organiser join-link failure — unknown, already
+   * used, expired, or the account is disabled. Never make this specific: a
+   * message that distinguishes "already used" from "no such token" tells an
+   * attacker which tokens exist, which is the same oracle BAD_CREDENTIALS_MSG
+   * exists to close.
+   */
+  BAD_JOIN_LINK_MSG: 'This join link is not valid. It may have already been used or expired. ' +
+    'Ask the admin to send you a new one.',
+
+  /** Random bytes in a join token (CONTRACTS-PHASE3 §1). */
+  JOIN_TOKEN_BYTES: 32,
+
+  /** Join-link lifetime: long enough to survive a weekend, short enough to matter. */
+  JOIN_TOKEN_TTL_HOURS: 72,
+
   // ---------------------------------------------------------------- login
 
   /**
@@ -363,6 +379,173 @@ const Auth = {
     return n;
   },
 
+  // -------------------------------------------- organiser join tokens
+
+  /**
+   * Generate a one-time organiser join token and its stored form.
+   *
+   * The caller writes `hash` and `expiresAt` to the Users row and hands `token`
+   * straight back to the admin in the HTTP response. THE PLAIN TOKEN MUST NEVER
+   * BE STORED OR LOGGED — if the sheet leaks, only the digest is in it, and a
+   * digest cannot be redeemed.
+   *
+   * @return {{token:string, hash:string, expiresAt:string}} Plain token, its
+   *     SHA-256 digest, and the ISO instant it stops working.
+   */
+  newJoinToken() {
+    const token = Util.randomToken(Auth.JOIN_TOKEN_BYTES);
+    return {
+      token: token,
+      hash: Util.sha256Hex(token),
+      expiresAt: new Date(Date.now() + Auth.JOIN_TOKEN_TTL_HOURS * 3600 * 1000).toISOString()
+    };
+  },
+
+  /**
+   * Issue a fresh join token for an existing user, invalidating any previous
+   * one — the old plain token no longer hashes to anything stored.
+   *
+   * @param {string} userId Target user_id.
+   * @return {{user_id:string, token:string, expiresAt:string}} The plain token,
+   *     which the caller must show once and never persist.
+   * @throws {Error} VALIDATION_FAILED on a blank id, NOT_FOUND on an unknown one.
+   */
+  mintJoinToken(userId) {
+    const id = Util.isBlank(userId) ? '' : String(userId).trim();
+    if (!id) {
+      throw Util.AppError(ERR.VALIDATION_FAILED, 'A user id is required to issue a join link.');
+    }
+
+    const usersTab = Auth._tab('USERS', 'Users');
+    const user = Repo.findBy(usersTab, 'user_id', id);
+    if (!user) throw Util.AppError(ERR.NOT_FOUND, 'No user found with id ' + id + '.');
+
+    const minted = Auth.newJoinToken();
+    Repo.updateRow(usersTab, user._row, {
+      join_token_hash: minted.hash,
+      join_expires_at: minted.expiresAt,
+      // A reissued link is unused again, whatever happened to the last one.
+      join_used_at: ''
+    });
+
+    return { user_id: user.user_id, token: minted.token, expiresAt: minted.expiresAt };
+  },
+
+  /**
+   * Is a user's join link still waiting to be used?
+   *
+   * This is the only thing about a join token that is safe to show in a list —
+   * the token and its hash never leave the backend.
+   *
+   * @param {Object} userRow A Users row.
+   * @return {boolean} True while a token exists, is unused and has not expired.
+   */
+  isJoinPending(userRow) {
+    if (!userRow) return false;
+    if (Util.isBlank(userRow.join_token_hash)) return false;
+    if (!Util.isBlank(userRow.join_used_at)) return false;
+    const expiresMs = Auth._parseIsoMs(userRow.join_expires_at);
+    return expiresMs !== null && expiresMs > Date.now();
+  },
+
+  /**
+   * Exchange a one-time join token for a password and a real session.
+   *
+   * Returns exactly the shape Auth.login returns, so the frontend stores the
+   * session the same way after joining as after signing in.
+   *
+   * @param {string} token The plain join token from the `?k=` parameter.
+   * @param {string} password The password the organiser is choosing.
+   * @param {string} [ua] User agent, recorded in the audit log only.
+   * @return {{token:string, expiresAt:string,
+   *           user:{user_id:string, display_name:string, role:string, tournament_id:string}}}
+   * @throws {Error} UNAUTHORIZED for any bad token, VALIDATION_FAILED for a weak password.
+   */
+  redeemJoinToken(token, password, ua) {
+    const plain = Util.isBlank(token) ? '' : String(token).trim();
+    // A missing token gets the same sentence as a wrong one.
+    if (!plain) throw Util.AppError(ERR.UNAUTHORIZED, Auth.BAD_JOIN_LINK_MSG);
+
+    const hash = Util.sha256Hex(plain);
+    const usersTab = Auth._tab('USERS', 'Users');
+
+    // THE TOKEN IS BURNED IN THE SAME LOCKED SECTION THAT SETS THE PASSWORD.
+    // Validating here and burning in a second step would leave a window where
+    // two requests carrying the same link both pass validation, and a token
+    // that survives its own use is a permanent back door into the account.
+    const outcome = Repo.withLock(() => {
+      const row = Auth._findUserByJoinTokenHash(hash);
+
+      // Unknown token, disabled account, already-used link and expired link all
+      // fall through to the same branch with the same message.
+      if (!row ||
+          String(row.status || '').toUpperCase() !== 'ACTIVE' ||
+          !Util.isBlank(row.join_used_at)) {
+        throw Util.AppError(ERR.UNAUTHORIZED, Auth.BAD_JOIN_LINK_MSG);
+      }
+      const expiresMs = Auth._parseIsoMs(row.join_expires_at);
+      if (expiresMs === null || expiresMs <= Date.now()) {
+        throw Util.AppError(ERR.UNAUTHORIZED, Auth.BAD_JOIN_LINK_MSG);
+      }
+
+      // Password rules are identical to createUser. This throws before anything
+      // is written, so a too-short password leaves the link usable and the
+      // organiser simply tries again.
+      Auth._validatePassword(password == null ? '' : String(password));
+
+      const salt = Util.randomToken(16);
+      const merged = Repo.updateRow(usersTab, row._row, {
+        salt: salt,
+        password_hash: Util.hashPassword(String(password), salt, Auth._pepper()),
+        // Clearing the hash is the burn; join_used_at records that it happened.
+        join_token_hash: '',
+        join_used_at: Util.nowIso()
+      });
+
+      // The session is minted inside the same lock as well. Organisers.disable
+      // revokes sessions under this lock too, so an admin disabling the account
+      // at this exact moment cannot slip between the two writes and leave a live
+      // session behind on a disabled organiser.
+      return { user: merged, session: Auth._createSession(merged, ua) };
+    });
+
+    const user = outcome.user;
+    const session = outcome.session;
+    const now = Util.nowIso();
+    try {
+      Repo.updateRow(usersTab, user._row, { last_login_at: now });
+    } catch (err) {
+      // A stale last_login_at is not worth failing a completed join over.
+      console.error('Auth.redeemJoinToken: could not update last_login_at for ' +
+        user.user_id + ': ' + err);
+    }
+
+    Audit.log({
+      actor: user.user_id,
+      role: user.role,
+      action: Audit.ACTIONS.ORGANISER_CREATED,
+      tournamentId: user.tournament_id || '',
+      entityType: 'USER',
+      entityId: user.user_id,
+      prev: null,
+      // The plain token is deliberately absent — the audit trail records that a
+      // join happened, never the secret that made it possible.
+      next: { email: user.email, joined: true, at: now },
+      ua: ua
+    });
+
+    return {
+      token: session.token,
+      expiresAt: session.expires_at,
+      user: {
+        user_id: user.user_id,
+        display_name: user.display_name,
+        role: user.role,
+        tournament_id: user.tournament_id || ''
+      }
+    };
+  },
+
   /**
    * Check a projector display token (DESIGN §5.5). Read-only surface, so this
    * answers with a boolean and never throws.
@@ -490,6 +673,30 @@ const Auth = {
   },
 
   /**
+   * Find the user holding a join token, by its stored digest.
+   *
+   * A blank digest never matches, so the many rows with an empty
+   * join_token_hash cell cannot be redeemed with an empty token. The compare is
+   * constant time and the loop never early-returns, for the same reason login's
+   * password compare does not.
+   *
+   * @param {string} hash SHA-256 hex digest of the supplied token.
+   * @return {Object|null} The Users row, or null.
+   */
+  _findUserByJoinTokenHash(hash) {
+    const want = Util.isBlank(hash) ? '' : String(hash).trim().toLowerCase();
+    if (!want) return null;
+    const rows = Repo.readAll(Auth._tab('USERS', 'Users'));
+    let found = null;
+    for (let i = 0; i < rows.length; i++) {
+      const stored = Util.isBlank(rows[i].join_token_hash)
+        ? '' : String(rows[i].join_token_hash).trim().toLowerCase();
+      if (stored && Auth._constantTimeEquals(stored, want)) found = rows[i];
+    }
+    return found;
+  },
+
+  /**
    * @param {string} password Plain text password.
    * @return {void}
    * @throws {Error} VALIDATION_FAILED when shorter than the minimum.
@@ -581,12 +788,13 @@ const Auth = {
 
   /**
    * @param {Object} user Users row.
-   * @return {Object} Copy without password_hash, salt or the sheet row marker.
+   * @return {Object} Copy without password_hash, salt, join_token_hash or the
+   *     sheet row marker. A join token digest is a credential too.
    */
   _publicUser(user) {
     const out = {};
     for (const k in user) {
-      if (k === 'password_hash' || k === 'salt' || k === '_row') continue;
+      if (k === 'password_hash' || k === 'salt' || k === 'join_token_hash' || k === '_row') continue;
       out[k] = user[k];
     }
     return out;
