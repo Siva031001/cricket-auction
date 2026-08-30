@@ -1,0 +1,617 @@
+/* =============================================================================
+   players.css — the /admin/players screen only: the general register
+   (DESIGN.md §11, CONTRACTS-PHASE2.md §6.2).
+
+   OWNERSHIP. Everything here is scoped to body[data-route="admin-players"].
+   app.css owns the tokens and every shared component (.panel, .btn, .field,
+   .status, .badge, .table); admin.css owns the shared admin chrome
+   (.admin__head, .admin__errors, .admin-table, .admin__empty). Neither is
+   edited from this file. Where a shared class needs different behaviour on
+   this route, it is overridden under the route selector, never redefined.
+
+   New names introduced here, all route-scoped:
+     .players  .players-scope  .players-scope__label  .players-scope__name
+       .players-scope__id
+     .players-counts-box  .players-counts  .players-count
+       .players-count--headline  .players-count__value
+       .players-count__label  .players-count__note
+     .players-filters  .players-filters__search  .players-filters__select
+     .players-table-box  .players-table  .players-table__scroll
+       .players-table__serial/__name/__dob/__role/__style/__mobile/__upi/
+       __payment/__registered/__auction/__actions
+     .players-sort  .players-sort__label  .players-sort__mark
+     .players-row  .players-row--withdrawn  .players-row__note
+     .players-serial  .players-name  .players-name__text  .players-name__value
+     .players-thumb  .players-thumb--none  .players-withdrawn
+     .players-dob__date  .players-dob__age  .players-mono  .players-action
+     .players-empty  .players-empty__title  .players-empty__note
+     .players-pager-box  .players-pager  .players-pager__status
+       .players-pager__note
+     .players-chooser  .players-chooser__item  .players-chooser__link
+       .players-chooser__count
+     .status--verified  .status--rejected  .status--unknown
+       (NEW MODIFIERS of app.css's .status component, not redefinitions of it:
+        app.css section 7 defines --pending/--sold/--unsold only, and payment
+        status has three different values. They set --status-mark so the shape
+        still comes from the single ::before rule in app.css.)
+
+   Two rules shape the layout:
+
+     1. TEN COLUMNS PLUS ACTIONS WILL NOT FIT A PHONE, AND NONE OF THEM MAY BE
+        DROPPED. The table scrolls sideways and the serial-number column is
+        sticky, so the row you are reading always keeps its identity. Hiding
+        columns on a narrow screen would silently give a phone a different
+        register from a laptop, and the admin would not know which one they
+        were looking at.
+
+     2. COLOUR IS NEVER THE ONLY SIGNAL (DESIGN.md §8/§51). Every status is a
+        word first, a shape second and a colour third. Withdrawn rows are
+        marked with the word "Withdrawn" and a left border, not a tint alone.
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Page frame
+   -------------------------------------------------------------------- */
+
+/* app.css caps .panel at 34rem for a phone form. Eleven columns need every
+   pixel a laptop has; the scroll container below keeps a phone honest. */
+body[data-route="admin-players"] .panel.players {
+  max-width: 90rem;
+}
+
+body[data-route="admin-players"] .admin__actions .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="admin-players"] .players-scope {
+  margin: 0 0 var(--space-4);
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+body[data-route="admin-players"] .players-scope__label { font-weight: 600; }
+
+body[data-route="admin-players"] .players-scope__name {
+  font-weight: 700;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+body[data-route="admin-players"] .players-scope__id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Counts summary — CONTRACTS-PHASE2 §3 / §6.2 rule 5.
+
+      "Eligible" leads and is visually the largest tile, because it is the
+      number that decides how big the auction actually is. "Registered in
+      total" is the number people quote by mistake.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  list-style: none;
+}
+
+body[data-route="admin-players"] .players-count {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="admin-players"] .players-count--headline {
+  grid-column: 1 / -1;
+  border: 2px solid var(--accent);
+  background: var(--surface);
+}
+
+body[data-route="admin-players"] .players-count__value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="admin-players"] .players-count--headline .players-count__value {
+  font-size: 2.25rem;
+  color: var(--accent);
+}
+
+body[data-route="admin-players"] .players-count__label {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+body[data-route="admin-players"] .players-count__note {
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+@media (min-width: 46em) {
+  body[data-route="admin-players"] .players-count--headline {
+    /* Still full width, but the number and its explanation sit side by side
+       so the tile does not tower over the five beside it. */
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto;
+    column-gap: var(--space-4);
+    align-items: center;
+  }
+  body[data-route="admin-players"] .players-count--headline .players-count__value {
+    grid-row: 1 / span 2;
+  }
+}
+
+
+/* -----------------------------------------------------------------------
+   3. Filter bar. Every control here changes the query the SERVER runs.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-filters {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0 var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+/* app.css gives .field a 1.5rem bottom margin, which is right in a stacked
+   form and too much in a four-control bar. */
+body[data-route="admin-players"] .players-filters .field {
+  margin-bottom: var(--space-4);
+}
+
+@media (min-width: 46em) {
+  body[data-route="admin-players"] .players-filters {
+    grid-template-columns: minmax(14rem, 2fr) repeat(3, minmax(10rem, 1fr));
+    align-items: start;
+  }
+  body[data-route="admin-players"] .players-filters__search { grid-column: 1; }
+}
+
+
+/* -----------------------------------------------------------------------
+   4. The table.
+
+      .admin-table (admin.css) supplies the padding, the borders and the
+      sticky header. Only the parts that differ for eleven columns live here.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-table__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* A focusable scroll region must still show where the focus is. */
+body[data-route="admin-players"] .players-table__scroll:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+
+body[data-route="admin-players"] .players-table {
+  width: 100%;
+  /* Wide enough that no column has to be squeezed out of legibility. Below
+     this the container scrolls; nothing is ever hidden. */
+  min-width: 78rem;
+  border-collapse: separate;   /* separate, or a sticky cell's border is lost */
+  border-spacing: 0;
+  font-size: 0.9375rem;
+}
+
+body[data-route="admin-players"] .players-table th,
+body[data-route="admin-players"] .players-table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+body[data-route="admin-players"] .players-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  border-bottom: 2px solid var(--line-strong);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* THE STICKY IDENTITY COLUMN. Ten columns scroll under the serial number, so
+   a row can never be read against the wrong player. */
+body[data-route="admin-players"] .players-table th[scope="row"],
+body[data-route="admin-players"] .players-table thead th:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--surface);
+  border-right: 2px solid var(--line);
+}
+
+body[data-route="admin-players"] .players-table thead th:first-child {
+  z-index: 3;
+  background: var(--bg);
+}
+
+body[data-route="admin-players"] .players-table th[scope="row"] { z-index: 1; }
+
+body[data-route="admin-players"] .players-table tbody tr:nth-child(even) td {
+  background: var(--bg);
+}
+
+body[data-route="admin-players"] .players-table tbody tr:nth-child(even) th[scope="row"] {
+  background: var(--bg);
+}
+
+body[data-route="admin-players"] .players-serial {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 1.0625rem;
+}
+
+body[data-route="admin-players"] .players-table__name { min-width: 15rem; }
+
+body[data-route="admin-players"] .players-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+body[data-route="admin-players"] .players-name__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+  min-width: 0;
+}
+
+body[data-route="admin-players"] .players-name__value {
+  font-weight: 700;
+  /* A player name is free text from a sheet: it can be long, and it can be
+     one unbroken word. */
+  overflow-wrap: anywhere;
+}
+
+body[data-route="admin-players"] .players-thumb {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+body[data-route="admin-players"] .players-thumb--none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--line-strong);
+}
+
+body[data-route="admin-players"] .players-dob__date {
+  display: block;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+body[data-route="admin-players"] .players-dob__age {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+/* Mobile numbers and UPI references are compared character by character
+   against a phone screen or a bank statement. Monospace makes 0/O and 1/l
+   different shapes; tabular figures keep the columns aligned. */
+body[data-route="admin-players"] .players-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+body[data-route="admin-players"] .players-table__upi { max-width: 14rem; }
+
+body[data-route="admin-players"] .players-table__registered { white-space: nowrap; }
+
+
+/* -----------------------------------------------------------------------
+   5. Sortable headers.
+
+      A <button> inside the <th>, so it is in the tab order and announced as
+      a control. The server does the sorting — the arrow only reports what
+      was asked for, and aria-sort says the same thing in words.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 2.25rem;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+body[data-route="admin-players"] .players-sort:hover .players-sort__label {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+body[data-route="admin-players"] .players-sort__mark {
+  flex: 0 0 auto;
+  font-size: 0.75em;
+  line-height: 1;
+}
+
+body[data-route="admin-players"] th[aria-sort="ascending"],
+body[data-route="admin-players"] th[aria-sort="descending"] {
+  color: var(--accent);
+}
+
+@media (pointer: coarse) {
+  body[data-route="admin-players"] .players-sort { min-height: var(--tap); }
+}
+
+
+/* -----------------------------------------------------------------------
+   6. Status pills.
+
+      NEW MODIFIERS of app.css's .status, for the payment statuses app.css
+      does not cover. The shape comes from app.css's single
+      `.status::before { content: var(--status-mark) }` rule, so there is
+      exactly one place a pill's glyph is drawn.
+
+      VERIFIED reuses the SOLD green and tick: same meaning to the eye —
+      this one is settled. REJECTED is the one place red is right; it is a
+      decision that stops a player, not a neutral state (DESIGN.md §8 keeps
+      red away from UN-SOLD for the projector, which is a different case).
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .status--verified {
+  --status-mark: var(--status-sold-mark);      /* ✓ tick */
+  background: var(--status-sold-bg);
+  color: var(--status-sold-fg);
+}
+
+body[data-route="admin-players"] .status--rejected {
+  --status-mark: var(--status-unsold-mark);    /* ✕ cross */
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+
+/* A value this build has never heard of. Shown as itself, flagged as odd,
+   never quietly folded into one of the known states. */
+body[data-route="admin-players"] .status--unknown {
+  --status-mark: "?";
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Withdrawn rows.
+
+      Marked by the word "Withdrawn" in the name cell and a solid left edge.
+      The muted text is the third signal, never the first — DESIGN.md §9: the
+      row is still a real registration and its serial number is still taken.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-row--withdrawn th[scope="row"] {
+  border-left: 4px solid var(--ink-muted);
+}
+
+body[data-route="admin-players"] .players-row--withdrawn .players-name__value {
+  color: var(--ink-muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+body[data-route="admin-players"] .players-withdrawn {
+  border-color: var(--ink-muted);
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Row actions
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-table__actions { min-width: 11rem; }
+
+body[data-route="admin-players"] .players-action {
+  width: auto;
+  margin-top: 0;
+  /* Smaller than the 48px phone target because this is a dense laptop table;
+     the coarse-pointer query below gives the full target back on a touch
+     screen. */
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.875rem;
+}
+
+@media (pointer: coarse) {
+  body[data-route="admin-players"] .players-action {
+    min-height: var(--tap);
+    font-size: 1rem;
+  }
+}
+
+/* The per-row live region: empty until the server refuses something, and
+   taking no space until then. */
+body[data-route="admin-players"] .players-row__note:empty { display: none; }
+
+body[data-route="admin-players"] .players-row__note {
+  margin-top: var(--space-2);
+  max-width: 22rem;
+}
+
+body[data-route="admin-players"] .players-row__note .banner {
+  padding: var(--space-2) var(--space-3);
+  border: 2px solid currentColor;
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  white-space: normal;
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Empty states and the pager
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-empty .players-empty__title {
+  margin: 0 0 var(--space-2);
+  color: var(--ink);
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+
+body[data-route="admin-players"] .players-empty .players-empty__note {
+  margin: 0 auto var(--space-4);
+  max-width: 40rem;
+}
+
+body[data-route="admin-players"] .players-empty .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="admin-players"] .players-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+body[data-route="admin-players"] .players-pager .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="admin-players"] .players-pager__status {
+  margin: 0;
+  flex: 1 1 14rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+body[data-route="admin-players"] .players-pager__note {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Tournament chooser — shown when the route carries no tournament id.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-players"] .players-chooser {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+body[data-route="admin-players"] .players-chooser__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+body[data-route="admin-players"] .players-chooser__link {
+  width: auto;
+  margin-top: 0;
+  text-align: left;
+}
+
+body[data-route="admin-players"] .players-chooser__count {
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* -----------------------------------------------------------------------
+   11. Print — an admin printing the register wants the register, not the
+       controls they cannot press on paper. The status pills lose their fills
+       so they do not come out as black rectangles; the word and the shape
+       survive, which is the whole reason they exist.
+   -------------------------------------------------------------------- */
+
+@media print {
+  body[data-route="admin-players"] .admin__actions,
+  body[data-route="admin-players"] .players-filters,
+  body[data-route="admin-players"] .players-table__actions,
+  body[data-route="admin-players"] .players-pager .btn { display: none; }
+
+  body[data-route="admin-players"] .players-table__scroll {
+    overflow: visible;
+    border: 0;
+  }
+
+  body[data-route="admin-players"] .players-table { min-width: 0; }
+
+  body[data-route="admin-players"] .players-table thead th,
+  body[data-route="admin-players"] .players-table th[scope="row"] {
+    position: static;
+    background: transparent;
+  }
+
+  body[data-route="admin-players"] .status {
+    border: 1px solid #000000;
+    background: transparent;
+    color: #000000;
+  }
+}
+
+
+/* -----------------------------------------------------------------------
+   12. Forced colours — let the OS win, but keep the shapes that carry
+       meaning when colour is taken away entirely.
+   -------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  body[data-route="admin-players"] .players-count,
+  body[data-route="admin-players"] .players-thumb { border: 1px solid CanvasText; }
+
+  body[data-route="admin-players"] .players-table th[scope="row"] {
+    border-right: 2px solid CanvasText;
+  }
+}

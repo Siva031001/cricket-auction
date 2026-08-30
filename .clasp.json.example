@@ -1,0 +1,24 @@
+{
+  "scriptId": "PASTE_YOUR_SCRIPT_ID_HERE",
+  "rootDir": "./backend"
+}
+
+// NOTE — this file is a template. Do not edit it with real values.
+//
+//   1. Copy it:   cp .clasp.json.example .clasp.json
+//   2. Open .clasp.json and replace PASTE_YOUR_SCRIPT_ID_HERE with the real
+//      Script ID.
+//
+// Where to find the Script ID: open the Google Sheet, choose
+// Extensions -> Apps Script, then Project Settings (gear icon). The Script ID
+// is on that page. It is a long string of letters, digits, - and _.
+//
+// rootDir must stay "./backend" — that is the folder clasp pushes to Apps
+// Script. Nothing outside backend/ is ever uploaded.
+//
+// .clasp.json itself is in .gitignore, because the script ID is specific to
+// one deployment and TEST and PROD have different ones. This .example file is
+// what gets committed.
+//
+// Strip these comment lines out of your real .clasp.json — clasp expects
+// plain JSON.

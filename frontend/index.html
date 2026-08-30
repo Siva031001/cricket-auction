@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B0F14">
+<meta name="description" content="Cricket tournament auction management — registration, payment verification and live auction.">
+<title>Cricket Auction</title>
+
+<!--
+================================================================================
+  BEFORE THIS APP DOES ANYTHING: SET API_BASE_URL.
+
+  Open  frontend/js/config.js  and replace
+
+      API_BASE_URL: 'PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE'
+
+  with the Web App URL of your Apps Script deployment, e.g.
+
+      API_BASE_URL: 'https://script.google.com/macros/s/AKfycb....../exec'
+
+  Get it from the Apps Script editor:
+      Deploy -> New deployment -> Web app
+      Execute as:      Me
+      Who has access:  Anyone          <- not "Only myself", or you get an
+                                          HTML sign-in page instead of JSON
+  then copy the URL. It must end in /exec, not /dev.
+
+  While API_BASE_URL is unset the app still loads and the routes still work,
+  but every API call fails fast with a NOT_CONFIGURED error and a red banner
+  appears at the top of the page. That is intentional — a silent failure at
+  the venue would be much worse.
+
+  Also check CONFIG.BASE_PATH in js/config.js. GitHub Pages project sites live
+  under /<repo-name>/, so BASE_PATH must be '/cricket-auction' (or '' if you
+  ever host at a domain root). The same value is duplicated in 404.html; if
+  you change one, change both.
+
+  Serving this locally? Run a static server from the frontend/ directory and
+  temporarily set BASE_PATH to '', because there is no /cricket-auction/
+  prefix on localhost. A plain static server also will not do the 404.html
+  bounce, so open the root URL and click through, rather than deep-linking.
+
+  Stack: plain HTML + CSS + vanilla JS. No framework, no bundler, no npm, no
+  CDN <script> tags, no web fonts (CONTRACTS.md §15). A projector at the venue
+  must never wait on a font download.
+================================================================================
+-->
+
+<!--
+  Stylesheets, in cascade order. app.css owns the tokens, the mobile-first
+  base, the shared admin nav and the projector theme, plus every shared
+  component class; the page stylesheets may only override, never redefine
+  (CONTRACTS-PHASE1.md §4, CONTRACTS-PHASE2.md §6).
+  A page stylesheet that has not been written yet simply 404s: the app still
+  renders, it just loses that page's cosmetic layer.
+-->
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/register.css">
+<link rel="stylesheet" href="css/admin.css">
+<link rel="stylesheet" href="css/payments.css">
+<link rel="stylesheet" href="css/players.css">
+<link rel="stylesheet" href="css/reports.css">
+<link rel="stylesheet" href="css/organiser.css">
+<link rel="stylesheet" href="css/auction.css">
+<link rel="stylesheet" href="css/display.css">
+</head>
+<body data-route="boot">
+
+  <!-- The router replaces the contents of #app on every navigation. -->
+  <div id="app" class="app">
+    <main class="panel">
+      <h1 class="panel__title">Loading…</h1>
+    </main>
+  </div>
+
+  <noscript>
+    <div class="banner banner--error" role="alert">
+      <span class="banner__mark" aria-hidden="true">⚠</span>
+      <strong>JavaScript is required.</strong>
+      This page needs JavaScript to load tournament data. Please turn it on and reload.
+    </div>
+  </noscript>
+
+  <!--
+    ==========================================================================
+    LOAD ORDER. These are plain globals, not ES modules.
+
+    Every tag carries `defer`, so the browser downloads them in parallel but
+    still runs them strictly in the order written here, after the HTML is
+    parsed and before DOMContentLoaded. app.js boots on DOMContentLoaded, so
+    it is guaranteed that everything above it has already run.
+
+    Dependency order, top to bottom:
+
+      1. config.js               CONFIG          depends on nothing
+      2. api.js                  API             uses CONFIG
+      3. image.js                ImageTool       uses nothing (canvas only)
+      4. ui.js                   UI              uses nothing (DOM only)
+      5. router.js               Router          uses CONFIG
+      6. pages/register.js       RegisterPage    uses API, UI, ImageTool, Router
+      7. pages/admin-login.js    AdminLoginPage  uses API, UI, Router
+      8. pages/admin-tournament.js AdminTournamentPage
+                                                 uses API, UI, ImageTool, Router
+      9. pages/admin-payments.js AdminPaymentsPage
+                                                 uses API, UI, Router, App
+     10. pages/admin-players.js  AdminPlayersPage
+                                                 uses API, UI, Router, App
+     11. app.js                  App             uses all of the above; LAST
+
+    The Phase 2 pages sit ABOVE app.js like every other page: they only
+    reference App from inside render(), which cannot run before app.js has
+    loaded and the router has dispatched. Loading them after app.js would
+    work too, but would break the "page files, then the shell" rule that
+    makes this list readable.
+
+    A page file that fails to load does NOT break the app. app.js looks its
+    global up by name at render time and shows a readable "screen failed to
+    load" panel instead of throwing and leaving a blank white page. A blank
+    page at a venue cannot be diagnosed; a message can.
+    ==========================================================================
+  -->
+  <script defer src="js/config.js"></script>
+  <script defer src="js/api.js"></script>
+  <script defer src="js/image.js"></script>
+  <script defer src="js/ui.js"></script>
+  <script defer src="js/router.js"></script>
+  <script defer src="js/offline.js"></script>
+  <script defer src="js/pages/register.js"></script>
+  <script defer src="js/pages/admin-login.js"></script>
+  <script defer src="js/pages/admin-tournament.js"></script>
+  <script defer src="js/pages/admin-payments.js"></script>
+  <script defer src="js/pages/admin-players.js"></script>
+  <script defer src="js/pages/admin-reports.js"></script>
+  <script defer src="js/pages/admin-audit.js"></script>
+  <script defer src="js/pages/admin-organisers.js"></script>
+  <script defer src="js/pages/organiser-join.js"></script>
+  <script defer src="js/pages/organiser-dashboard.js"></script>
+  <script defer src="js/pages/organiser-auction.js"></script>
+  <script defer src="js/pages/display.js"></script>
+  <script defer src="js/app.js"></script>
+</body>
+</html>

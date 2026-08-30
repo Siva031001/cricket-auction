@@ -1,0 +1,512 @@
+/* =============================================================================
+   register.css — the public player registration page ONLY.
+
+   Everything here is scoped to  body[data-route="register"],  which
+   js/pages/register.js sets on every render. Nothing in this file can leak
+   into the admin screens or the projector.
+
+   What it does NOT do: re-declare tokens, panels, banners, inputs, buttons,
+   fields or errors. All of those live in app.css and are reused as-is
+   (.panel, .panel__title, .panel__note, .panel__subtitle, .kv, .btn,
+   .btn--secondary, .field, .field__label, .field__hint, .field__error,
+   .form-error, .banner, .visually-hidden). This file only adds the pieces
+   that exist nowhere else: the payment block, the image previews, the
+   progress line and the confirmation screen.
+
+   Mobile first (DESIGN.md §12/§49). The phone layout is the default; the one
+   media query at the bottom only relaxes things on a larger screen. Every tap
+   target stays at or above var(--tap) = 48px.
+
+   Contents
+     1. Page rhythm
+     2. Tournament header
+     3. Rules
+     4. Step headings
+     5. Payment: amount, steps, QR, UPI id
+     6. Form: image previews, errors, progress
+     7. Confirmation screen
+     8. Contact
+     9. Larger screens, motion, contrast, print
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Page rhythm
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .panel {
+  /* Room for the QR without it touching the panel edge on a 360px phone. */
+  padding: var(--space-5) var(--space-4);
+}
+
+body[data-route="register"] .reg-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 8rem;
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Tournament header
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-header {
+  text-align: center;
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--line);
+}
+
+body[data-route="register"] .reg-header__logo {
+  width: 96px;
+  height: 96px;
+  margin: 0 auto var(--space-3);
+  object-fit: contain;
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="register"] .reg-header__name {
+  /* Long tournament names are normal and must never be clipped. */
+  overflow-wrap: anywhere;
+}
+
+body[data-route="register"] .reg-header__desc {
+  margin: 0 0 var(--space-4);
+  color: var(--ink-muted);
+  /* Preserve the organiser's line breaks without needing innerHTML. */
+  white-space: pre-wrap;
+}
+
+body[data-route="register"] .reg-header__fee {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+body[data-route="register"] .reg-header__fee-label { color: var(--ink-muted); }
+
+body[data-route="register"] .reg-header__fee-value {
+  font-size: 1.375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="register"] .reg-header__window {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   3. Rules — collapsed by default so they never push the form off screen.
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-rules {
+  margin-top: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="register"] .reg-rules__summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);          /* the whole strip is the tap target */
+  padding: var(--space-2) var(--space-4);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+body[data-route="register"] .reg-rules__line {
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-4);
+  color: var(--ink-muted);
+}
+
+body[data-route="register"] .reg-rules__line:last-child { padding-bottom: var(--space-4); }
+
+
+/* -----------------------------------------------------------------------
+   4. Step headings — the page is two numbered steps and it says so.
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-step__title {
+  margin: var(--space-6) 0 var(--space-2);
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+body[data-route="register"] .reg-step__note {
+  margin: 0 0 var(--space-5);
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   5. Payment (DESIGN.md §8, §12)
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-pay {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="register"] .reg-pay .reg-step__title { margin-top: 0; }
+
+body[data-route="register"] .reg-pay__amount {
+  margin: 0 0 var(--space-4);
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+body[data-route="register"] .reg-pay__steps {
+  margin: 0 0 var(--space-5);
+  padding-left: 1.4em;
+}
+
+body[data-route="register"] .reg-pay__steps li { margin-bottom: var(--space-2); }
+
+/* --- QR. Big. A player often holds a second phone over the screen, and a
+       small QR simply will not focus. Capped so it does not become silly on
+       a tablet, floored so it stays scannable on a 320px phone. ---------- */
+
+body[data-route="register"] .reg-qr {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-4);
+  background: #FFFFFF;             /* pure white matters: some scanners key
+                                      off the quiet zone contrast */
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+body[data-route="register"] .reg-qr__img {
+  width: min(300px, 78vw);
+  height: auto;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  object-fit: contain;
+  image-rendering: pixelated;      /* keep the modules crisp when upscaled */
+}
+
+body[data-route="register"] .reg-qr__caption {
+  display: block;
+  margin-top: var(--space-3);
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+body[data-route="register"] .reg-pay__download { margin-bottom: var(--space-4); }
+
+/* --- UPI id + copy. The fallback path for every UPI app that refuses to
+       scan a saved screenshot, so it gets real estate, not a footnote. --- */
+
+body[data-route="register"] .reg-upi {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 2px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="register"] .reg-upi__label {
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+body[data-route="register"] .reg-upi__value {
+  font-family: var(--font-mono);
+  font-size: 1.125rem;
+  font-weight: 700;
+  /* A UPI id has no spaces and can be long; wrap it rather than overflow. */
+  overflow-wrap: anywhere;
+  /* Make a long-press select the whole id in one go on iOS and Android. */
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+body[data-route="register"] .reg-upi__copy { margin-top: var(--space-1); }
+
+body[data-route="register"] .reg-upi__status:not(:empty) {
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+body[data-route="register"] .reg-pay__warn {
+  margin: var(--space-4) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   6. Form
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-form { margin: 0; }
+
+/* --- Image preview. Proof that the resize worked, in a size the player can
+       actually judge. The caption carries the byte count. ---------------- */
+
+body[data-route="register"] .reg-preview {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  min-height: 1.5rem;
+}
+
+body[data-route="register"] .reg-preview__img {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="register"] .reg-preview__img[hidden] { display: none; }
+
+body[data-route="register"] .reg-preview__caption {
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+/* Green is the third signal, not the first: the word "Ready" and the visible
+   thumbnail already say it. */
+body[data-route="register"] .reg-preview__caption--ok {
+  color: var(--status-sold-bg);
+  font-weight: 600;
+}
+
+body[data-route="register"] .reg-preview__caption--bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* --- Submit-time error. Sits directly above the button so it cannot be
+       missed on the way to pressing it again. ---------------------------- */
+
+body[data-route="register"] .reg-form__error:not(:empty) {
+  margin: var(--space-5) 0;
+}
+
+body[data-route="register"] .reg-form__error .banner {
+  border: 2px solid var(--danger);
+  border-radius: var(--radius);
+}
+
+/* --- Progress ------------------------------------------------------- */
+
+body[data-route="register"] .reg-form__progress:not(:empty) {
+  margin: var(--space-4) 0;
+}
+
+body[data-route="register"] .reg-progress__label {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+body[data-route="register"] .reg-smallprint {
+  margin: var(--space-4) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Registration closed
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-closed {
+  margin: var(--space-5) 0;
+  padding: var(--space-5) var(--space-4);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  text-align: center;
+}
+
+body[data-route="register"] .reg-closed__title {
+  margin: 0 0 var(--space-2);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+body[data-route="register"] .reg-closed__reason {
+  margin: 0;
+  font-size: 1.0625rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Confirmation (DESIGN.md §12)
+
+   The serial number is the one thing that has to survive: read off a phone
+   held up in a noisy hall, and legible in a screenshot someone forwards on
+   WhatsApp. So it is the largest thing on the page by a wide margin.
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-done { text-align: center; }
+
+body[data-route="register"] .reg-done__tick {
+  margin: 0;
+  font-size: 3rem;
+  line-height: 1;
+  color: var(--status-sold-bg);
+}
+
+body[data-route="register"] .reg-done__title { margin-bottom: var(--space-5); }
+
+body[data-route="register"] .reg-done__serial-box {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4) var(--space-3);
+  border: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="register"] .reg-done__serial-label {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+body[data-route="register"] .reg-done__serial {
+  margin: var(--space-1) 0 0;
+  /* Fluid, so it is huge on a phone and still huge on a laptop. */
+  font-size: clamp(4.5rem, 30vw, 8rem);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+body[data-route="register"] .reg-done__keep {
+  margin: 0 0 var(--space-5);
+  font-size: 1.0625rem;
+  font-weight: 700;
+}
+
+body[data-route="register"] .reg-done .kv {
+  /* Centred summary reads better than a left-aligned grid under a centred
+     serial number. */
+  grid-template-columns: 1fr;
+  gap: 0;
+  margin-bottom: var(--space-5);
+  text-align: center;
+}
+
+body[data-route="register"] .reg-done .kv dt { margin-top: var(--space-3); }
+
+body[data-route="register"] .reg-done .kv dd {
+  font-family: var(--font-sans);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+body[data-route="register"] .reg-done__status {
+  margin: 0 0 var(--space-5);
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Contact
+   -------------------------------------------------------------------- */
+
+body[data-route="register"] .reg-contact {
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+
+body[data-route="register"] .reg-contact .panel__subtitle { margin-top: 0; }
+
+body[data-route="register"] .reg-contact__line {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+}
+
+body[data-route="register"] .reg-contact__phone {
+  /* A phone number is a tap target: give it the full 48px. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  padding: 0 var(--space-4);
+  font-size: 1.125rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Larger screens and user preferences
+   -------------------------------------------------------------------- */
+
+@media (min-width: 34rem) {
+  body[data-route="register"] .panel { padding: var(--space-6); }
+
+  body[data-route="register"] .reg-upi {
+    /* Room to put the id and the Copy button on one line. */
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "label  label"
+      "value  copy"
+      "status status";
+    align-items: center;
+    column-gap: var(--space-4);
+  }
+
+  body[data-route="register"] .reg-upi__label  { grid-area: label; }
+  body[data-route="register"] .reg-upi__value  { grid-area: value; }
+  body[data-route="register"] .reg-upi__copy   { grid-area: copy; width: auto; margin-top: 0; }
+  body[data-route="register"] .reg-upi__status { grid-area: status; }
+}
+
+/* The camera roll thumbnail and the QR both animate nothing, so there is very
+   little to reduce here — but the confirmation tick would benefit from not
+   drawing attention if the user asked for calm. Kept as a no-op guard in case
+   anything animated is added later. */
+@media (prefers-reduced-motion: reduce) {
+  body[data-route="register"] * { animation: none !important; }
+}
+
+@media (forced-colors: active) {
+  body[data-route="register"] .reg-done__serial-box { border: 3px solid CanvasText; }
+  body[data-route="register"] .reg-upi { border: 2px dashed CanvasText; }
+  body[data-route="register"] .reg-preview__img { border: 2px solid CanvasText; }
+}
+
+@media print {
+  /* Only the confirmation is worth printing. */
+  body[data-route="register"] .reg-pay,
+  body[data-route="register"] .reg-form,
+  body[data-route="register"] .reg-rules { display: none; }
+
+  body[data-route="register"] .reg-done__serial { color: #000000; }
+  body[data-route="register"] .reg-done__serial-box { border-color: #000000; }
+}

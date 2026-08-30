@@ -1,0 +1,594 @@
+/* =============================================================================
+   display.css — the projector screen ONLY.
+
+   Everything here is scoped to  body[data-route="display"],  which
+   js/pages/display.js sets on every render. Nothing in this file can leak
+   into the registration or admin screens.
+
+   WHAT THIS FILE DOES NOT DO
+   app.css already owns the projector theme: the #0B0F14 background, the
+   near-white ink, the 7.5%-per-side safe area, the fluid type for
+   .display-name / .display-serial / .display-meta / .display-amount, the
+   .status pill colours, and the 200 ms .reveal fade. Those tokens and rules
+   are REUSED here, never redeclared. This file only adds the pieces that
+   exist nowhere else — the page frame, the top bar, the connection
+   indicator, the team standings strip, the summary and the keyboard hint —
+   plus the handful of overrides the full-height projector layout needs.
+
+   THE FIVE THINGS THAT DECIDE WHETHER THIS SCREEN WORKS
+   (CONTRACTS-PHASE4-7.md PHASE 5, DESIGN.md §8)
+
+   1. 1024x768, NOT 1080p. Every size below was checked against a 1024x768
+      frame first. Inside app.css's safe area that leaves roughly 870x653 of
+      usable space, and the whole layout is budgeted against that number.
+
+   2. ~15% EDGE CROP. app.css keeps the page inside 7.5% per side. Nothing in
+      this file may use a negative margin, a fixed position against a
+      viewport edge, or 100vw — all three would put content back in the crop
+      zone. The keyboard hint is positioned against the padded .app box, not
+      the viewport.
+
+   3. NOTHING SCROLLS. A scrollbar on a projector means content the hall
+      cannot see. The frame is a three-row grid — top bar / stage / standings
+      — where only the middle row flexes, and every row that could grow has
+      min-height:0 so it shrinks instead of pushing the page taller.
+
+   4. CONTRAST >= 12:1, ALWAYS. Only two ink colours are used: --proj-ink
+      (~17.6:1 on --proj-bg) and --proj-ink-dim (~12.6:1). No third, dimmer
+      grey is introduced anywhere, because a bright hall and a tired projector
+      lamp will eat it.
+
+   5. SYSTEM FONTS ONLY. No @font-face, no @import, no CDN. Sizes are all
+      clamp()-based so nothing is pinned to a pixel value that only looks
+      right on the machine it was written on.
+
+   Contents
+     1. Page frame
+     2. Top bar and the connection indicator
+     3. Stage: the player card
+     4. Photo
+     5. Details: serial, name, role, style, age
+     6. Status pill: colour + word + shape
+     7. Result: amount and team
+     8. Message card: waiting, closed, cannot connect
+     9. Bottom: team standings and summary
+    10. Keyboard hint
+    11. Shape, motion and print
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Page frame
+
+   app.css centres .app with flex. On the projector the page must instead
+   FILL the safe area top to bottom, so the standings sit on the bottom edge
+   and the player card gets everything left over.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .app {
+  align-items: stretch;
+  justify-content: stretch;
+  /* height, not min-height: the frame must never grow past one screen. */
+  height: 100vh;
+  height: 100dvh;             /* honoured where it exists; harmless elsewhere */
+}
+
+body[data-route="display"] .display {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: clamp(8px, 1.4vh, 28px);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  /* The hint is positioned against this box, which is already inside the
+     safe area — never against the viewport, which is not. */
+  position: relative;
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Top bar and the connection indicator
+
+   Small on purpose. The tournament name and the phase are context, not the
+   message; the player is the message. The indicator is the exception: when
+   it turns amber it has to be noticed from the operator's seat.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__top {
+  display: flex;
+  align-items: baseline;
+  gap: clamp(10px, 1.6vw, 32px);
+  min-width: 0;
+}
+
+body[data-route="display"] .display__tournament {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: clamp(16px, 1.8vw, 36px);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--proj-ink);
+  /* One line only. A long tournament name must not push the player card
+     down; the name of the tournament is the least important thing here. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body[data-route="display"] .display__phase {
+  flex: 0 0 auto;
+  font-size: clamp(14px, 1.5vw, 30px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--proj-ink-dim);       /* ~12.6:1 */
+}
+
+/* The connection indicator. Three signals again: a word, a glyph and a
+   colour — never the colour on its own (DESIGN.md §51). */
+body[data-route="display"] .display__link {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  padding: 0.25em 0.8em;
+  border: 2px solid var(--proj-line);
+  border-radius: var(--radius-pill);
+  font-size: clamp(13px, 1.4vw, 28px);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: var(--proj-ink-dim);
+}
+
+body[data-route="display"] .display__link-mark {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+/* Healthy. Deliberately quiet — a green badge shouting "LIVE" for three
+   hours is noise, and noise is what stops the amber one being noticed. */
+body[data-route="display"] .display__link[data-state="live"] {
+  border-color: var(--proj-line);
+  color: var(--proj-ink-dim);
+  background: transparent;
+}
+
+/* Reconnecting. The amber is the SAME token as the PENDING pill, reused, not
+   redefined. A frozen-but-plausible screen is the single worst outcome for
+   this page, so this state is loud on purpose. */
+body[data-route="display"] .display__link[data-state="reconnecting"] {
+  background: var(--status-pending-bg);
+  border-color: rgba(255, 255, 255, 0.55);
+  color: var(--status-pending-fg);
+}
+
+/* Given up: a bad key, or no tournament. Slate, matching UN-SOLD, because
+   this is "not working" rather than "error" — and because red-on-dark is
+   the first thing a dim projector loses. */
+body[data-route="display"] .display__link[data-state="stopped"] {
+  background: var(--status-unsold-bg);
+  border-color: rgba(255, 255, 255, 0.55);
+  color: var(--status-unsold-fg);
+}
+
+
+/* -----------------------------------------------------------------------
+   3. Stage: the player card
+
+   .display-layout (45fr / 55fr, DESIGN.md §8) is app.css's. All that is
+   added here is the full-height behaviour: the card fills the middle grid
+   row, and min-height:0 lets the photo shrink rather than overflow.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__stage {
+  display: grid;
+  /* minmax(0,1fr), not the default `auto`: an auto-sized track is allowed to
+     grow past its container, and on this page that means the safe area. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+}
+
+body[data-route="display"] .display__card {
+  height: 100%;
+  min-height: 0;
+  align-content: center;
+}
+
+/* Both cards occupy the same grid cell, so swapping between "player" and
+   "waiting" cannot shift the layout by a pixel. */
+body[data-route="display"] .display__card,
+body[data-route="display"] .display__message {
+  grid-area: 1 / 1;
+}
+
+body[data-route="display"] .display__card[hidden],
+body[data-route="display"] .display__message[hidden] {
+  display: none;
+}
+
+
+/* -----------------------------------------------------------------------
+   4. Photo — the left ~45%.
+
+   app.css gives .display-photo a fixed 3/4 aspect and width:100%, which is
+   right on a 16:9 screen and wrong at 1024x768: a 373px-wide column would
+   ask for a 497px-tall photo out of about 470px of stage. Overriding to
+   height-driven sizing keeps the ratio and lets the frame decide the size,
+   so the photo is as large as the screen allows and never one pixel taller.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__photo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+body[data-route="display"] .display-photo {
+  /* Height first, width derived — the opposite of app.css's default. */
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  /* Faces sit above the middle of a portrait photo, so bias the crop up.
+     A cropped chin is fine; a cropped forehead is not. */
+  object-position: 50% 30%;
+}
+
+body[data-route="display"] .display-photo[hidden] { display: none; }
+
+/* No photo on file. Never an empty rectangle — an empty rectangle looks
+   like a failed load, and the hall starts wondering what else is broken. */
+body[data-route="display"] .display__photo--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 3 / 4;
+  border: 4px solid var(--proj-line);
+  border-radius: var(--radius);
+  background: #121A22;
+  color: var(--proj-ink-dim);
+  font-size: clamp(32px, 5vw, 96px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="display"] .display__photo--empty[hidden] { display: none; }
+
+
+/* -----------------------------------------------------------------------
+   5. Details — the right ~55%.
+
+   Serial, name, role, style, age. Nothing else. Everything on this side
+   inherits its size from app.css's clamp() rules; only the rhythm between
+   the lines is set here, tightened so five lines plus a pill fit inside 768.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__details {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  gap: clamp(2px, 0.5vh, 10px);
+}
+
+body[data-route="display"] .display-serial {
+  margin: 0;
+  /* Colour, not size, separates the serial from the name: it is what the
+     organiser calls out, so it stays near-white rather than dimmed. */
+  color: var(--proj-ink);
+  letter-spacing: 0.02em;
+}
+
+body[data-route="display"] .display-name {
+  margin: 0;
+}
+
+body[data-route="display"] .display-meta {
+  margin: 0;
+  /* app.css uses 1.6 here for a phone. On the projector these three lines
+     are competing with the photo for height, so they sit tighter. */
+  line-height: 1.25;
+}
+
+/* The role is the one piece of metadata a bidder reacts to fastest, so it
+   is the brightest of the three. */
+body[data-route="display"] .display-meta--role {
+  color: var(--proj-ink);
+  font-weight: 700;
+}
+
+/* An empty <p> must take no space at all, or a player with no recorded age
+   leaves a gap that makes the column look broken. */
+body[data-route="display"] .display-meta:empty { display: none; }
+
+
+/* -----------------------------------------------------------------------
+   6. Status pill — colour AND word AND shape (DESIGN.md §8/§51)
+
+   The colours and the pill geometry come from app.css. The one change: on
+   this route the shape is a real element (.status__mark) written by
+   display.js instead of a ::before, so it survives this stylesheet failing
+   to load and so it can be asserted on in a test. The ::before is turned off
+   here to avoid showing the glyph twice.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .status::before {
+  content: none;
+}
+
+body[data-route="display"] .status[hidden] { display: none; }
+
+body[data-route="display"] .status__mark {
+  font-size: 1.05em;
+  line-height: 1;
+  /* Tabular-ish alignment so the pill width does not jump between a dot, a
+     tick and a cross as the same player moves from PENDING to SOLD. */
+  min-width: 1em;
+  text-align: center;
+}
+
+body[data-route="display"] .status__word {
+  line-height: 1;
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Result — the pill, the price and the team, on one line
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: clamp(8px, 1.2vw, 28px);
+  margin-top: clamp(4px, 1vh, 20px);
+  min-width: 0;
+}
+
+body[data-route="display"] .display-amount[hidden],
+body[data-route="display"] .display__team[hidden] {
+  display: none;
+}
+
+body[data-route="display"] .display__team {
+  font-size: clamp(20px, 2.6vw, 52px);
+  font-weight: 700;
+  color: var(--proj-ink-dim);
+  overflow-wrap: anywhere;
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Message card — waiting, closed, and the bad-key screen.
+
+   This is the anti-blank-screen surface. Whatever goes wrong, one of these
+   three sentences is on the projector instead of nothing.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: clamp(10px, 2vh, 32px);
+  height: 100%;
+  min-height: 0;
+  padding: 0 clamp(8px, 4vw, 96px);
+}
+
+body[data-route="display"] .display__message-title {
+  margin: 0;
+  font-size: clamp(36px, 5.5vw, 110px);
+  line-height: 1.05;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+  color: var(--proj-ink);
+}
+
+body[data-route="display"] .display__message-body {
+  margin: 0;
+  font-size: clamp(20px, 2.6vw, 52px);
+  line-height: 1.35;
+  color: var(--proj-ink-dim);        /* ~12.6:1 */
+  /* Long enough to read from the back, short enough not to wrap into a
+     paragraph nobody reads. */
+  max-width: 24em;
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Bottom — team standings and the auction summary (DESIGN.md §7.3)
+
+   Secondary information, and sized like it. It must never grow enough to
+   squeeze the player card, so the whole strip is capped and the grid wraps
+   instead of overflowing.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__bottom {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, 1vh, 18px);
+  min-height: 0;
+  max-height: 30vh;
+  padding-top: clamp(6px, 1vh, 18px);
+  border-top: 2px solid var(--proj-line);
+}
+
+body[data-route="display"] .display__bottom[hidden] { display: none; }
+
+body[data-route="display"] .display__teams {
+  display: grid;
+  /* auto-fit, so 8 teams become 2 rows of 4 at 1024x768 and one row on a
+     wide screen, with no media query to keep in sync. */
+  grid-template-columns: repeat(auto-fit, minmax(clamp(140px, 12vw, 260px), 1fr));
+  gap: clamp(4px, 0.8vw, 18px) clamp(8px, 1.4vw, 32px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-height: 0;
+}
+
+body[data-route="display"] .display__team-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+body[data-route="display"] .display__team-name {
+  font-size: clamp(15px, 1.5vw, 30px);
+  font-weight: 700;
+  color: var(--proj-ink);
+  /* Wrap rather than ellipsis: a truncated team name is worse than a name
+     on two lines, because half the hall supports that team. */
+  overflow-wrap: anywhere;
+}
+
+body[data-route="display"] .display__team-purse {
+  font-size: clamp(15px, 1.5vw, 30px);
+  font-weight: 800;
+  color: var(--proj-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="display"] .display__team-count,
+body[data-route="display"] .display__team-slot {
+  font-size: clamp(12px, 1.2vw, 24px);
+  color: var(--proj-ink-dim);        /* ~12.6:1 */
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="display"] .display__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(8px, 1.6vw, 40px);
+  align-items: baseline;
+}
+
+body[data-route="display"] .display__summary[hidden] { display: none; }
+
+body[data-route="display"] .display__summary-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+}
+
+body[data-route="display"] .display__summary-value {
+  font-size: clamp(16px, 1.7vw, 34px);
+  font-weight: 800;
+  color: var(--proj-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="display"] .display__summary-label {
+  font-size: clamp(12px, 1.2vw, 24px);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--proj-ink-dim);
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Keyboard hint
+
+   Visible long enough for whoever sets the laptop up to read it, gone long
+   enough before the first player that the audience never sees it. display.js
+   adds .is-faded after a few seconds.
+   -------------------------------------------------------------------- */
+
+body[data-route="display"] .display__hint {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 0.3em 0.9em;
+  border: 2px solid var(--proj-line);
+  border-radius: var(--radius-pill);
+  background: var(--proj-bg);
+  color: var(--proj-ink-dim);
+  font-size: clamp(12px, 1.2vw, 24px);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 1;
+  /* A fade, like everything else on this screen. No slide, no bounce. */
+  transition: opacity 600ms ease-out;
+}
+
+body[data-route="display"] .display__hint.is-faded {
+  opacity: 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   11. Shape, motion and print
+   -------------------------------------------------------------------- */
+
+/* A portrait or square projector — rare, but it happens with a ceiling
+   mount rotated the wrong way. app.css already stacks .display-layout below
+   1:1; this keeps the photo from eating the whole frame when it does. */
+@media (max-aspect-ratio: 1/1) {
+  body[data-route="display"] .display__photo,
+  body[data-route="display"] .display-photo,
+  body[data-route="display"] .display__photo--empty {
+    height: auto;
+    max-height: 42vh;
+  }
+
+  body[data-route="display"] .display-photo,
+  body[data-route="display"] .display__photo--empty {
+    width: auto;
+  }
+}
+
+/* A very short frame (a wide, letterboxed projector). Give the stage the
+   room by dropping the standings to one compact line. */
+@media (max-height: 620px) {
+  body[data-route="display"] .display__bottom {
+    max-height: 24vh;
+  }
+
+  body[data-route="display"] .display__team-slot {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* app.css section 12 already zeroes animations globally; the hint uses a
+     transition, so it needs saying here too. It still disappears — it just
+     does it instantly. */
+  body[data-route="display"] .display__hint {
+    transition-duration: 0.01ms;
+  }
+}
+
+/* Nobody prints a projector screen, but if someone does, do not spend a
+   whole toner cartridge on a #0B0F14 background. */
+@media print {
+  body[data-route="display"] {
+    background: #FFFFFF;
+    color: #000000;
+  }
+
+  body[data-route="display"] .display__hint {
+    display: none;
+  }
+}

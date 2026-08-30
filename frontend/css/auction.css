@@ -1,0 +1,934 @@
+/* =============================================================================
+   auction.css — the organiser's live auction console ONLY.
+
+   Everything here is scoped to  body[data-route="organiser-auction"],  which
+   js/pages/organiser-auction.js sets on every render. Nothing in this file can
+   leak into the registration, admin, organiser-dashboard or projector screens.
+
+   WHAT THIS FILE DOES NOT DO
+   app.css already owns the design tokens, the form controls, the buttons, the
+   banners, the .status pill colours, the .badge, the .choice checkbox row and
+   the 48 px tap target. Every one of those is REUSED here, never redeclared.
+   This file adds only the pieces that exist nowhere else: the console frame,
+   the connection indicator, the offline bar, the serial-number control, the
+   player card, the sell form with its consequence line and amber advisories,
+   the permanent team strip, the running summary, the refused-replay list and
+   the large-photo overlay.
+
+   THE SIX THINGS THAT DECIDE WHETHER THIS SCREEN WORKS
+
+   1. THE SERIAL BOX IS THE BIGGEST THING ON THE PAGE. A lottery number is
+      called out in a noisy hall and typed by somebody who is looking at the
+      room, not the keyboard. It gets a 2.5rem monospace-ish figure, a 64 px
+      box and its own colour.
+
+   2. THE CONSEQUENCE LINE IS READ IN ONE SECOND OR IT IS USELESS. It is set
+      at 1.25rem in the ink colour, on its own line, directly above the SOLD
+      button, with nothing competing beside it.
+
+   3. AMBER MEANS "LOOK AGAIN", NOT "NO". The advisory banners reuse
+      .banner--warning and sit next to a real tick-box. Nothing in this file
+      may ever style a disabled state that looks like a refusal — the only
+      disabled control here is the SOLD button before the box is ticked, and
+      the tick-box is immediately beside it.
+
+   4. OFFLINE MUST BE UNMISSABLE. The offline bar is sticky to the top of the
+      console, full width, on a saturated surface, with a glyph AND the word
+      OFFLINE AND the colour. It cannot be dismissed.
+
+   5. THE TEAM STRIP NEVER SCROLLS AWAY ON A LAPTOP. Eight teams fit in one
+      auto-fill grid at 1280 px; below that it wraps rather than shrinking the
+      figures, because a purse read wrong is a purse spent wrong.
+
+   6. COLOUR IS NEVER THE ONLY SIGNAL (DESIGN.md §51). Every state on this
+      screen carries a word and a shape as well: the connection dot, the status
+      pill, the offline bar, the full-team row.
+
+   Contents
+     1. Frame and head
+     2. Connection indicator
+     3. Offline bar
+    3a. Offline pack
+     4. Call box: the serial number
+     5. Search
+     6. Player card
+     7. Sell form, consequence line and advisories
+     8. Correction
+     9. Team strip
+    10. Running summary
+    11. Refused replays
+    12. Keyboard legend
+    13. Large photo overlay
+    14. Motion, forced colours, print
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Frame and head
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .app {
+  /* The console is a working surface, not a form. Let it use the width. */
+  align-items: stretch;
+}
+
+body[data-route="organiser-auction"] .auc {
+  max-width: 76rem;
+  width: 100%;
+  margin: 0 auto;
+}
+
+body[data-route="organiser-auction"] .auc__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+body[data-route="organiser-auction"] .auc__scope {
+  margin: var(--space-2) 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-auction"] .auc__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc__actions .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="organiser-auction"] .auc__banners:empty,
+body[data-route="organiser-auction"] .auc__errors:empty,
+body[data-route="organiser-auction"] .auc__result:empty {
+  /* An empty live region must take no space, but it must stay in the DOM —
+     a region inserted at the same moment it gets its text is often missed. */
+  display: none;
+}
+
+body[data-route="organiser-auction"] .auc__banners > .banner + .banner,
+body[data-route="organiser-auction"] .auc__result > .banner + .banner {
+  margin-top: var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc__body > * + * {
+  margin-top: var(--space-5);
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Connection indicator
+
+   Never colour alone: the dot changes SHAPE (● to ⚠) and the text changes
+   WORD (Live / Reconnecting / Offline / Not connected) as well as the colour.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  min-height: var(--tap);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+body[data-route="organiser-auction"] .auc-link__mark {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+body[data-route="organiser-auction"] .auc-link[data-state="live"] {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+body[data-route="organiser-auction"] .auc-link[data-state="reconnecting"] {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+body[data-route="organiser-auction"] .auc-link[data-state="offline"],
+body[data-route="organiser-auction"] .auc-link[data-state="stopped"] {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+
+/* -----------------------------------------------------------------------
+   3. Offline bar
+
+   Sticky, full width, undismissable. DESIGN.md §16 point 4 and the offline.js
+   header: this is a safety net, and the paper sheet is the real fallback, so
+   the reminder is part of the bar rather than a footnote somewhere else.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-off {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: calc(var(--space-5) * -1) calc(var(--space-5) * -1) var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 4px solid var(--danger);
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+
+body[data-route="organiser-auction"] .auc-off[data-mode="pending"] {
+  border-bottom-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--ink);
+}
+
+body[data-route="organiser-auction"] .auc-off__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+body[data-route="organiser-auction"] .auc-off__mark {
+  font-size: 1.4em;
+  line-height: 1;
+}
+
+body[data-route="organiser-auction"] .auc-off__note {
+  margin: var(--space-2) 0 0;
+  font-size: 0.9375rem;
+}
+
+body[data-route="organiser-auction"] .auc-off__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+body[data-route="organiser-auction"] .auc-off__actions .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   3a. Offline pack
+
+   Sits at the top of the body because it is the one thing that has to be done
+   BEFORE the auction and is worthless once the wifi has already gone. Once
+   the pack is ready it collapses to a quiet single line, so it stops
+   competing with the serial box for the whole of the live auction.
+
+   data-state carries the classification the page makes itself:
+     unknown  still asking IndexedDB
+     none     nothing cached
+     partial  cached, but incomplete OR with no photographs — NOT ready
+     working  a download is running
+     ready    players AND photographs, all of them
+   A partial pack is styled like a warning, never like a success, because a
+   green tick over a pack with no photographs is the exact lie this screen
+   must not tell.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-pack {
+  padding: var(--space-3) var(--space-4);
+  border: 2px solid var(--warning);
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+}
+
+body[data-route="organiser-auction"] .auc-pack[data-state="ready"] {
+  border-color: var(--line);
+  border-width: 1px;
+  background: var(--surface);
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-auction"] .auc-pack[data-state="unknown"] {
+  border-color: var(--line);
+  border-width: 1px;
+  background: var(--surface);
+}
+
+body[data-route="organiser-auction"] .auc-pack[data-state="none"] {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+/* Once it is ready there is nothing to read and nothing to do, so the whole
+   block shrinks to one line and the heading goes away. */
+body[data-route="organiser-auction"] .auc-pack[data-state="ready"] .panel__subtitle {
+  display: none;
+}
+
+body[data-route="organiser-auction"] .auc-pack__status {
+  margin: 0;
+  font-weight: 700;
+}
+
+body[data-route="organiser-auction"] .auc-pack[data-state="ready"] .auc-pack__status {
+  font-weight: 400;
+}
+
+body[data-route="organiser-auction"] .auc-pack__phase:empty,
+body[data-route="organiser-auction"] .auc-pack__progress:empty,
+body[data-route="organiser-auction"] .auc-pack__warnings:empty {
+  display: none;
+}
+
+body[data-route="organiser-auction"] .auc-pack__progress {
+  margin-top: var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc-pack__phase {
+  margin: var(--space-1) 0 0;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="organiser-auction"] .auc-pack__warnings {
+  margin-top: var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc-pack__warn-list {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  font-size: 0.875rem;
+}
+
+body[data-route="organiser-auction"] .auc-pack__actions {
+  margin-top: var(--space-3);
+}
+
+body[data-route="organiser-auction"] .auc-pack__go {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="organiser-auction"] .auc-pack__note {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8125rem;
+}
+
+/* Nothing to say once it is ready and there is no download running. */
+body[data-route="organiser-auction"] .auc-pack[data-state="ready"] .auc-pack__note {
+  display: none;
+}
+
+
+/* -----------------------------------------------------------------------
+   4. Call box: the serial number, the primary control
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-call {
+  padding: var(--space-4);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="organiser-auction"] .auc-call__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+body[data-route="organiser-auction"] .auc-call__row .field {
+  flex: 1 1 16rem;
+  margin-bottom: 0;
+}
+
+body[data-route="organiser-auction"] .auc-call__row .input {
+  /* The number is typed without looking. Big, wide-tracked, tall. */
+  min-height: 4rem;
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="organiser-auction"] .auc-call__go {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 4rem;
+  margin-top: 0;
+  padding-inline: var(--space-6);
+  font-size: 1.125rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   5. Search — deliberately quieter than the call box
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-find__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+body[data-route="organiser-auction"] .auc-find__row .field {
+  flex: 1 1 18rem;
+  margin-bottom: 0;
+}
+
+body[data-route="organiser-auction"] .auc-find__row .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+body[data-route="organiser-auction"] .auc-find__results ul {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+}
+
+body[data-route="organiser-auction"] .auc-find__row-btn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+body[data-route="organiser-auction"] .auc-find__row-btn + .auc-find__row-btn {
+  margin-top: var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc-find__row-btn:hover {
+  border-color: var(--accent);
+}
+
+body[data-route="organiser-auction"] .auc-find__serial {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="organiser-auction"] .auc-find__name {
+  flex: 1 1 12rem;
+  font-weight: 700;
+}
+
+body[data-route="organiser-auction"] .auc-find__meta {
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   6. Player card
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="organiser-auction"] .auc-card__photo {
+  flex: 0 0 auto;
+  width: 9rem;
+}
+
+body[data-route="organiser-auction"] .auc-card__photo img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="organiser-auction"] .auc-card__photo-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border: 2px dashed var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink-muted);
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+body[data-route="organiser-auction"] .auc-card__body {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+body[data-route="organiser-auction"] .auc-card__serial {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="organiser-auction"] .auc-card__name {
+  /* Big, but it must not push the sell form off a 768 px-tall laptop. */
+  margin: 0 0 var(--space-2);
+  font-size: clamp(1.75rem, 4vw, 2.75rem);
+  line-height: 1.1;
+  /* A 60-character name from the registration form must not blow the layout. */
+  overflow-wrap: anywhere;
+}
+
+body[data-route="organiser-auction"] .auc-card__meta {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-muted);
+  font-size: 1.0625rem;
+}
+
+body[data-route="organiser-auction"] .auc-card__pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc-card__called {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+body[data-route="organiser-auction"] .auc-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+body[data-route="organiser-auction"] .auc-card__actions .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Sell form, consequence line and advisories
+
+   This block is the money. It is visually the loudest thing under the card,
+   because it is where the mistake happens.
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-sell:empty {
+  display: none;
+}
+
+body[data-route="organiser-auction"] .auc-sell {
+  padding: var(--space-4);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="organiser-auction"] .auc-sell__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+body[data-route="organiser-auction"] .auc-sell__grid .field {
+  flex: 1 1 16rem;
+  margin-bottom: 0;
+}
+
+body[data-route="organiser-auction"] .auc-sell__grid .input {
+  min-height: 3.25rem;
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* THE CONSEQUENCE LINE (DESIGN.md §6.5a). Read in one second or useless. */
+body[data-route="organiser-auction"] .auc-sell__preview {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  border-left: 4px solid var(--accent);
+  background: var(--info-bg);
+  color: var(--ink);
+  font-size: 1.25rem;
+  line-height: 1.45;
+}
+
+body[data-route="organiser-auction"] .auc-sell__warnings:empty {
+  display: none;
+}
+
+body[data-route="organiser-auction"] .auc-sell__warnings {
+  margin-top: var(--space-3);
+}
+
+body[data-route="organiser-auction"] .auc-warn + .auc-warn {
+  margin-top: var(--space-2);
+}
+
+/* The tick-box, not a wall. It sits directly under the amber banners it
+   belongs to, so the thing being acknowledged is never off-screen. */
+body[data-route="organiser-auction"] .auc-sell__ack {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 2px solid var(--warning);
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  font-weight: 700;
+}
+
+body[data-route="organiser-auction"] .auc-sell__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+body[data-route="organiser-auction"] .auc-sell__buttons .btn {
+  flex: 1 1 14rem;
+  margin-top: 0;
+}
+
+body[data-route="organiser-auction"] .auc-sell__go {
+  min-height: 3.5rem;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+body[data-route="organiser-auction"] .auc-sell__unsold {
+  min-height: 3.5rem;
+  font-size: 1.0625rem;
+  font-weight: 700;
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Correction — deliberately plainer than the sell form
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-correct {
+  padding: var(--space-4);
+  border: 2px dashed var(--danger);
+  border-radius: var(--radius);
+}
+
+body[data-route="organiser-auction"] .auc-correct__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+body[data-route="organiser-auction"] .auc-correct__grid .field {
+  flex: 1 1 14rem;
+  margin-bottom: 0;
+}
+
+body[data-route="organiser-auction"] .auc-correct .btn {
+  width: auto;
+  margin-top: var(--space-4);
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Team strip — what the organiser is actually managing
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-teams__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+body[data-route="organiser-auction"] .auc-team {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* A full squad reads as full from the shape of the border and from the words
+   in .auc-team__slot ("Squad full"), not from a colour. */
+body[data-route="organiser-auction"] .auc-team--full {
+  border-left-style: dashed;
+  border-left-color: var(--line-strong);
+  background: var(--bg);
+}
+
+body[data-route="organiser-auction"] .auc-team__name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+body[data-route="organiser-auction"] .auc-team__purse {
+  font-size: 1.375rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="organiser-auction"] .auc-team__count,
+body[data-route="organiser-auction"] .auc-team__slot {
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Running summary — the four honest labels of DESIGN.md §6.9
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-sum__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+body[data-route="organiser-auction"] .auc-sum__item {
+  display: grid;
+  gap: 2px;
+  min-width: 6rem;
+}
+
+body[data-route="organiser-auction"] .auc-sum__value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-route="organiser-auction"] .auc-sum__label {
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+
+/* -----------------------------------------------------------------------
+   11. Refused replays — never dropped, never forced
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-rej {
+  padding: var(--space-4);
+  border: 2px solid var(--warning);
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+}
+
+body[data-route="organiser-auction"] .auc-rej__list {
+  list-style: none;
+  margin: var(--space-3) 0;
+  padding: 0;
+}
+
+body[data-route="organiser-auction"] .auc-rej__row {
+  padding: var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+body[data-route="organiser-auction"] .auc-rej__row + .auc-rej__row {
+  margin-top: var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc-rej__head {
+  margin: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+body[data-route="organiser-auction"] .auc-rej__msg {
+  margin: var(--space-2) 0 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+body[data-route="organiser-auction"] .auc-rej__actions {
+  margin-top: var(--space-2);
+}
+
+body[data-route="organiser-auction"] .auc-rej .btn {
+  width: auto;
+  margin-top: var(--space-2);
+}
+
+
+/* -----------------------------------------------------------------------
+   12. Keyboard legend — on the page, never behind a help modal
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-keys {
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink-muted);
+}
+
+body[data-route="organiser-auction"] .auc-keys__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+body[data-route="organiser-auction"] .auc-keys__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 0.875rem;
+}
+
+body[data-route="organiser-auction"] .auc-keys__key {
+  padding: 0.1em 0.5em;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 3px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+body[data-route="organiser-auction"] .auc-keys__note {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8125rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   13. Large photo overlay (requirement §20)
+   -------------------------------------------------------------------- */
+
+body[data-route="organiser-auction"] .auc-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: var(--scrim);
+}
+
+body[data-route="organiser-auction"] .auc-zoom__box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: min(90vw, 44rem);
+  max-height: 92vh;
+  padding: var(--space-4);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: auto;
+}
+
+body[data-route="organiser-auction"] .auc-zoom__box .btn {
+  width: auto;
+  margin-top: 0;
+  align-self: flex-end;
+}
+
+body[data-route="organiser-auction"] .auc-zoom__img {
+  max-width: 100%;
+  max-height: 74vh;
+  object-fit: contain;
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+body[data-route="organiser-auction"] .auc-zoom__hint {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   14. Motion, forced colours, print
+
+   app.css section 10 already zeroes animation and transition globally under
+   prefers-reduced-motion, so nothing has to be repeated here. What DOES need
+   saying is what happens when the browser throws every colour away: this
+   screen must stay usable, because "which team is full" and "am I offline"
+   cannot rest on a hue.
+   -------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  body[data-route="organiser-auction"] .auc-off {
+    border: 4px solid CanvasText;
+  }
+  body[data-route="organiser-auction"] .auc-sell__preview {
+    border: 2px solid CanvasText;
+  }
+  body[data-route="organiser-auction"] .auc-sell__ack {
+    border: 3px solid CanvasText;
+  }
+  body[data-route="organiser-auction"] .auc-team--full {
+    border: 2px dashed CanvasText;
+  }
+  body[data-route="organiser-auction"] .auc-link {
+    border: 2px solid CanvasText;
+  }
+}
+
+@media print {
+  /* Printing the console is a legitimate end-of-auction act: the team strip
+     and the summary are the numbers somebody will want on paper. The
+     controls are not. */
+  body[data-route="organiser-auction"] .auc-call,
+  body[data-route="organiser-auction"] .auc-find,
+  body[data-route="organiser-auction"] .auc-pack,
+  body[data-route="organiser-auction"] .auc-sell,
+  body[data-route="organiser-auction"] .auc-keys,
+  body[data-route="organiser-auction"] .auc-zoom,
+  body[data-route="organiser-auction"] .auc__actions {
+    display: none;
+  }
+  body[data-route="organiser-auction"] .auc-off {
+    position: static;
+  }
+}

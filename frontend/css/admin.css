@@ -1,0 +1,446 @@
+/* =============================================================================
+   admin.css — the admin screens only: /admin/login and /admin/dashboard.
+
+   Owned by the admin pages agent. app.css is owned by the integration agent
+   and is not edited here; everything below either scopes itself to
+   body[data-route="admin-login"] / body[data-route="admin-dashboard"] or to a
+   class only the admin pages use.
+
+   Two rules shape all of it:
+
+     1. DESKTOP FIRST, BUT NOT PHONE HOSTILE. An admin creates a tournament on
+        a laptop, so the default here is a wide panel and a two-column form.
+        app.css is mobile-first, so the phone layout is already correct — the
+        media queries below only *add* the wide-screen behaviour, and the
+        table drops to horizontal scroll rather than collapsing into an
+        unreadable stack.
+
+     2. app.css OWNS THE TOKENS AND THE CONTROLS. Colours come from the
+        variables in app.css section 1; .btn, .input, .field and .status are
+        reused as they are. Nothing here redefines a control, only its layout.
+
+   Contents
+     1. Shared admin chrome
+     2. Sign-in screen
+     3. Tournament table
+     4. Tournament status pills
+     5. Forms
+     6. Image pickers
+     7. Link boxes (the registration link — the point of the whole screen)
+     8. "Not built yet" panel
+     9. Print
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Shared admin chrome
+   -------------------------------------------------------------------- */
+
+/* app.css caps .panel at 34rem, which is right for a phone form and far too
+   narrow for a seven-column table. Widen it for the admin routes only. */
+body[data-route="admin-dashboard"] .panel.admin {
+  max-width: 72rem;
+}
+
+.admin__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.admin__head .panel__title { margin-bottom: var(--space-1); }
+.admin__head .panel__note  { margin-bottom: 0; }
+
+.admin__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* app.css makes .btn full width, which is correct on a phone form and wrong
+   in a toolbar. Shrink to content, and drop the stacked margin the
+   `.btn + .btn` rule adds. */
+.admin__actions .btn,
+.admin-table__actions .btn,
+.linkbox__controls .btn,
+.admin-form__submit .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+/* The live region is empty until something goes wrong; give it no space at
+   all until it has content, so the layout does not sit with a permanent gap. */
+.admin__errors:empty,
+.admin-login__error:empty { display: none; }
+
+.admin__errors { margin-bottom: var(--space-4); }
+
+.admin__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.admin__empty {
+  margin: 0;
+  padding: var(--space-6) var(--space-4);
+  border: 2px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Sign-in screen — narrow on purpose. A wide two-field form looks broken.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-login"] .panel.admin-login {
+  max-width: 26rem;
+  margin-top: var(--space-6);
+}
+
+.admin-login__error { margin-bottom: var(--space-4); }
+
+/* The sign-in button is the only action, so it stays full width — a wide,
+   unmissable target on both a laptop and a phone. */
+.admin-login__form .btn { margin-top: var(--space-2); }
+
+
+/* -----------------------------------------------------------------------
+   3. Tournament table
+   -------------------------------------------------------------------- */
+
+/* Seven columns will not fit a phone. Scrolling sideways keeps every cell
+   readable; collapsing the table into stacked blocks loses the column
+   headers, which is what makes the numbers mean anything. */
+.admin-table__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.admin-table {
+  width: 100%;
+  min-width: 56rem;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  border-bottom: 2px solid var(--line-strong);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.admin-table tbody tr:last-child th,
+.admin-table tbody tr:last-child td { border-bottom: 0; }
+
+.admin-table tbody tr:nth-child(even) { background: var(--bg); }
+
+.admin-table__name {
+  font-weight: 700;
+  /* A tournament name is free text from a sheet; it can be long and it can
+     be one unbroken word. */
+  overflow-wrap: anywhere;
+  min-width: 12rem;
+}
+
+.admin-table__slug {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Counts and money line up on their last digit, so two rows can be compared
+   at a glance. */
+.admin-table__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.admin-table__actions {
+  min-width: 16rem;
+}
+
+.admin-table__actions .btn {
+  /* Smaller than the 48px phone target, because these are laptop controls in
+     a dense table — but still comfortably clickable, and the media query
+     below restores the full target on a touch screen. */
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.875rem;
+  margin: 0 var(--space-2) var(--space-2) 0;
+}
+
+.admin-table__status-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--line);
+}
+
+.admin-table__status-controls .btn { margin: 0; }
+
+.admin-table__no-moves {
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+/* Any device without a fine pointer gets the full 48px target back. */
+@media (pointer: coarse) {
+  .admin-table__actions .btn {
+    min-height: var(--tap);
+    font-size: 1rem;
+  }
+}
+
+
+/* -----------------------------------------------------------------------
+   4. Tournament status pills.
+
+      Separate from .status in app.css, which is the PLAYER status
+      (pending / sold / un-sold). A tournament has five states and they mean
+      completely different things; sharing one class would eventually make a
+      draft tournament look like an unsold player.
+
+      Same principle as app.css section 7 though: the word carries the
+      meaning, the colour only reinforces it, and every pill keeps a border
+      so it survives forced-colors and a washed-out projector.
+   -------------------------------------------------------------------- */
+
+.t-status {
+  display: inline-block;
+  padding: 0.25em 0.75em;
+  border: 2px solid currentColor;
+  border-radius: var(--radius-pill);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.t-status--draft          { color: #48555F; background: #EEF2F5; }
+.t-status--reg-open       { color: #14532D; background: #DCFCE7; }
+.t-status--reg-closed     { color: #7C2D12; background: #FFEDD5; }
+.t-status--auction-live   { color: #0B3E6F; background: #DBEAFE; }
+.t-status--auction-closed { color: #3F3F46; background: #E4E4E7; }
+.t-status--unknown        { color: var(--danger); background: var(--danger-bg); }
+
+
+/* -----------------------------------------------------------------------
+   5. Forms
+   -------------------------------------------------------------------- */
+
+.admin-form { margin: 0; }
+
+.admin-form__group {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4) var(--space-5) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.admin-form__legend {
+  padding: 0 var(--space-2);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.admin-form__progress:empty { display: none; }
+.admin-form__progress { margin-bottom: var(--space-4); }
+
+.admin-form__submit {
+  display: flex;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+}
+
+/* Two columns from tablet width up. The fields are short (a date, a fee, a
+   mobile number) so one long column wastes most of a laptop screen and makes
+   the form feel far longer than it is. */
+@media (min-width: 46em) {
+  .admin-form__group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 var(--space-5);
+  }
+
+  .admin-form__legend { grid-column: 1 / -1; }
+
+  /* Long-form text and the image pickers stay full width. */
+  .admin-form__group > .field:has(.textarea),
+  .admin-form__group > .field__hint,
+  .admin-form__group > .imagepick__chosen,
+  .admin-form__group > .choice {
+    grid-column: 1 / -1;
+  }
+}
+
+/* :has() is not everywhere yet. Without it the textareas simply sit in one
+   of the two columns, which is tidy rather than broken — no fallback hack
+   needed, and nothing overlaps. */
+
+
+/* -----------------------------------------------------------------------
+   6. Image pickers
+   -------------------------------------------------------------------- */
+
+.imagepick__chosen:empty { display: none; }
+
+.imagepick__chosen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+}
+
+.imagepick__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.imagepick__thumb {
+  width: 3rem;
+  height: 3rem;
+  flex: 0 0 auto;
+  object-fit: contain;   /* contain, not cover: a QR must not be cropped */
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.imagepick__name {
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Link boxes.
+
+      The registration link is the single thing an admin comes to this screen
+      to get, so it is boxed, accented and impossible to miss.
+   -------------------------------------------------------------------- */
+
+.linkbox {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.linkbox__row + .linkbox__row {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--line);
+}
+
+.linkbox__label {
+  margin: 0 0 var(--space-1);
+  font-size: 1.0625rem;
+  font-weight: 700;
+}
+
+.linkbox__note {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+.linkbox__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.linkbox__url {
+  flex: 1 1 20rem;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  background: var(--bg);
+}
+
+
+/* -----------------------------------------------------------------------
+   8. "Not built yet" panel — Phases 2 to 4 (CONTRACTS-PHASE1.md §6)
+   -------------------------------------------------------------------- */
+
+.later {
+  margin-top: var(--space-6);
+  padding: var(--space-4) var(--space-5);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.later .panel__subtitle { margin-top: 0; }
+
+.later__list {
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+.later__list li + li { margin-top: var(--space-2); }
+
+
+/* -----------------------------------------------------------------------
+   9. Print — an admin printing the dashboard wants the table, not the
+      buttons they cannot press on paper.
+   -------------------------------------------------------------------- */
+
+@media print {
+  .admin__actions,
+  .admin-table__actions,
+  .later,
+  .linkbox__controls .btn { display: none; }
+
+  .admin-table__scroll { overflow: visible; border: 0; }
+  .admin-table { min-width: 0; }
+  .t-status { border-color: #000000; color: #000000; background: transparent; }
+}

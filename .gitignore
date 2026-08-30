@@ -1,0 +1,51 @@
+# --- Node / npm ---------------------------------------------------------
+# npm is a developer convenience for clasp only. The app ships no JS deps.
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json.bak
+
+# --- clasp --------------------------------------------------------------
+# .clasp.json holds the REAL Apps Script script ID for this deployment,
+# which is environment-specific (TEST and PROD have different ones) and is
+# not something every clone should inherit. Commit .clasp.json.example
+# instead and have each developer copy it and fill in their own ID.
+.clasp.json
+.clasp.test.json
+.clasp.prod.json
+.clasprc.json
+.clasp-credentials.json
+
+# --- Local env and credentials ------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+client_secret*.json
+service-account*.json
+secrets/
+
+# --- Editors and IDEs ---------------------------------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# --- OS -----------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# --- Scratch ------------------------------------------------------------
+tmp/
+*.log
