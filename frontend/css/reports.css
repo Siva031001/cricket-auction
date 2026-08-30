@@ -1,0 +1,645 @@
+/* =============================================================================
+   reports.css — the two Phase 6/7 admin screens:
+
+       body[data-route="admin-audit"]     js/pages/admin-audit.js
+       body[data-route="admin-reports"]   js/pages/admin-reports.js
+
+   Owned by the reports/audit agent. app.css is owned by the integration agent
+   and is NOT edited here; admin.css belongs to the admin pages agent and is
+   not edited either. Everything below is either scoped to one of the two
+   route selectors above, or named with a prefix only these two pages use
+   (audit-, reports-).
+
+   Three rules shape all of it:
+
+     1. app.css OWNS THE TOKENS AND THE CONTROLS. Colours come from the
+        variables in app.css section 1; .btn, .input, .field, .banner,
+        .admin-table and .badge are reused exactly as they are. Nothing here
+        redefines a control, only its layout.
+
+     2. DESKTOP FIRST, BUT NEVER PHONE HOSTILE. Both screens are laptop work
+        — an audit log is read side by side with a bank statement, and a CSV
+        is downloaded to a machine that has Excel on it. app.css is
+        mobile-first, so the phone layout is already correct; the media
+        queries below only ADD the wide-screen behaviour.
+
+     3. COLOUR IS NEVER THE ONLY SIGNAL (DESIGN.md §8/§51). Every state that
+        gets a tint here also gets a word from the JS and a border or a
+        weight change from the CSS, so it survives greyscale, a washed-out
+        projector, forced-colors mode and red-green colour blindness.
+
+   Contents
+     1. Shared width and heading rhythm
+     2. Audit — the append-only notice
+     3. Audit — filters
+     4. Audit — the table
+     5. Audit — the before/after diff  (the reason the screen exists)
+     6. Audit — dispute-evidence marking, empty state, pager
+     7. Reports — scope line and drift warning
+     8. Reports — the stat tiles
+     9. Reports — the download panel
+    10. Reduced motion, forced colors and print
+   ========================================================================== */
+
+
+/* -----------------------------------------------------------------------
+   1. Shared width and heading rhythm
+
+      app.css caps .panel at 34rem, which is right for a phone form and far
+      too narrow for a five-column log or a four-across tile grid.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-audit"] .panel.admin,
+body[data-route="admin-reports"] .panel.admin {
+  max-width: 84rem;
+}
+
+body[data-route="admin-audit"] .admin__body,
+body[data-route="admin-reports"] .admin__body {
+  display: block;
+}
+
+.reports-group__title,
+body[data-route="admin-audit"] .audit-section__title {
+  margin: var(--space-6) 0 var(--space-2);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.reports-group:first-of-type .reports-group__title { margin-top: var(--space-4); }
+
+.reports-group__note {
+  margin: 0 0 var(--space-3);
+  max-width: 52rem;
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   2. Audit — the append-only notice
+
+      This is the sentence that gives the log its evidential value, so it is
+      the first thing under the heading and it is bordered rather than tinted
+      alone. If reports.css never loads, app.css's .banner--info still draws
+      it as a visible message; nothing here is load-bearing for the meaning.
+   -------------------------------------------------------------------- */
+
+body[data-route="admin-audit"] .audit-notice {
+  margin-bottom: var(--space-5);
+  border: 2px solid var(--info);
+  border-radius: var(--radius);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+
+/* -----------------------------------------------------------------------
+   3. Audit — filters
+
+      Five controls. They wrap on a phone and sit in one row from tablet up.
+      The actor box is the widest because a name is longer than a date.
+   -------------------------------------------------------------------- */
+
+.audit-filters {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0 var(--space-4);
+  margin-bottom: var(--space-5);
+  padding: var(--space-4) var(--space-4) var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.audit-filters .field { margin-bottom: var(--space-4); }
+
+.audit-filters .field__hint {
+  font-size: 0.8125rem;
+}
+
+@media (min-width: 46em) {
+  .audit-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .audit-filters__search { grid-column: 1 / -1; }
+}
+
+@media (min-width: 68em) {
+  .audit-filters {
+    /* tournament · action · actor · from · to */
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.4fr)
+                           minmax(0, 0.8fr) minmax(0, 0.8fr);
+  }
+  .audit-filters__search { grid-column: auto; }
+}
+
+
+/* -----------------------------------------------------------------------
+   4. Audit — the table
+
+      Five columns, one of which is a whole diff. Horizontal scroll rather
+      than a stacked layout: the column headers are what make the values
+      mean anything, and stacking loses them.
+   -------------------------------------------------------------------- */
+
+.audit-table__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* A keyboard-reachable scroll region must show where the focus went. */
+.audit-table__scroll:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.audit-table {
+  min-width: 64rem;
+}
+
+.audit-table td,
+.audit-table th {
+  vertical-align: top;
+}
+
+.audit-table__time  { min-width: 11rem; white-space: normal; }
+.audit-table__actor { min-width: 10rem; }
+.audit-table__action { min-width: 12rem; }
+.audit-table__entity { min-width: 10rem; }
+.audit-table__changes { min-width: 24rem; }
+
+/* Every identifier on this screen is quoted into an email or compared
+   against a sheet, so it is monospace and it wraps rather than truncating —
+   a half-shown id is worse than a wrapped one. */
+.audit-logid,
+.audit-actor__id,
+.audit-entity__id,
+.audit-entity__tournament,
+.audit-action__code {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.audit-time {
+  display: block;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-actor__name {
+  display: block;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.audit-actor__role {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+.audit-entity__type {
+  display: block;
+  font-weight: 600;
+}
+
+.audit-action {
+  display: inline-block;
+  padding: 0.2em 0.7em;
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+
+/* -----------------------------------------------------------------------
+   5. Audit — the before/after diff
+
+      A three-column grid: field, old value, new value. On a phone it
+      collapses to one column per line, which is slower to read but never
+      truncates a value — and a truncated purse figure in a dispute is worse
+      than a tall row.
+   -------------------------------------------------------------------- */
+
+.audit-changes__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-change {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0 var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px dotted var(--line);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.audit-change:last-child { border-bottom: 0; }
+
+@media (min-width: 46em) {
+  .audit-change {
+    grid-template-columns: minmax(7rem, 12rem) minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: baseline;
+  }
+}
+
+.audit-change__field {
+  font-weight: 700;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.audit-change__old,
+.audit-change__new {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* The old value is struck through AND dimmed AND labelled by position, so
+   which side is which never rests on the tint alone. */
+.audit-change__old {
+  color: var(--ink-muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.audit-change__new {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.audit-change__arrow {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+
+.audit-change__absent {
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+/* A field that did not move is still shown — an unchanged team id is often
+   the point — but it is quiet, and it sorts below the ones that did. */
+.audit-change--same .audit-change__new {
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+.audit-change--same .audit-change__old {
+  text-decoration: none;
+}
+
+.audit-change--moved .audit-change__field::after {
+  /* A mark as well as the weight, for greyscale and forced-colors. */
+  content: " •";
+  color: var(--accent);
+}
+
+.audit-changes__none,
+.audit-changes__more {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   6. Audit — dispute-evidence marking, empty state, pager
+   -------------------------------------------------------------------- */
+
+/* PAYMENT_VERIFIED · PAYMENT_REJECTED · PLAYER_SOLD · AUCTION_CORRECTED.
+   A left rule, a heavier action pill and the words "Dispute evidence" from
+   the JS. Three signals; remove any one and the row is still marked. */
+.audit-row--key > * {
+  background: var(--info-bg);
+}
+
+.audit-row--key .audit-table__time {
+  box-shadow: inset 4px 0 0 0 var(--accent);
+}
+
+.audit-action--key {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.audit-flag {
+  display: inline-block;
+  margin-left: var(--space-2);
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.audit-empty__title {
+  margin: 0 0 var(--space-2);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.audit-empty__note {
+  margin: 0 auto var(--space-4);
+  max-width: 40rem;
+  color: var(--ink-muted);
+}
+
+.audit-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.audit-pager .btn {
+  width: auto;
+  margin-top: 0;
+}
+
+.audit-pager__status {
+  margin: 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.audit-pager__note {
+  margin: var(--space-3) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+
+/* -----------------------------------------------------------------------
+   7. Reports — scope line and drift warning
+   -------------------------------------------------------------------- */
+
+.reports-scope {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-left: 4px solid var(--accent);
+  background: var(--bg);
+  font-size: 0.9375rem;
+}
+
+.reports-scope__label { color: var(--ink-muted); }
+.reports-scope__name  { font-weight: 700; }
+
+.reports-scope__id {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.reports-warnings:empty { display: none; }
+
+/* The counters_match warning. Deliberately as loud as an error: a purse that
+   the auction console is quoting wrongly is a live problem, not a note. */
+.reports-drift {
+  display: block;
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4);
+  border: 2px solid var(--warning);
+  border-left-width: 8px;
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  color: var(--ink);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+.reports-drift .banner__mark {
+  font-size: 1.25rem;
+  color: var(--warning);
+}
+
+.reports-drift .banner__title {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: 1.0625rem;
+  color: var(--warning);
+}
+
+.reports-context {
+  margin-bottom: var(--space-5);
+  border: 2px solid var(--info);
+  border-radius: var(--radius);
+}
+
+
+/* -----------------------------------------------------------------------
+   8. Reports — the stat tiles
+
+      Auto-fit rather than a fixed column count: the four groups have
+      different tile counts and none of them should leave a ragged hole.
+   -------------------------------------------------------------------- */
+
+.reports-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.reports-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* The numbers an organiser asks for out loud, made bigger and outlined —
+   size and a border, not a colour. */
+.reports-tile--headline {
+  border: 2px solid var(--accent);
+  background: var(--bg);
+}
+
+.reports-tile__value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.reports-tile--headline .reports-tile__value { font-size: 2.125rem; }
+
+.reports-tile__label {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.reports-tile__note {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink-muted);
+}
+
+.reports-generated {
+  margin: var(--space-4) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+.reports-empty {
+  margin: 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   9. Reports — the download panel
+   -------------------------------------------------------------------- */
+
+.reports-downloads {
+  margin-top: var(--space-6);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.reports-downloads .reports-group__title { margin-top: 0; }
+
+.reports-downloads__note {
+  margin: 0 0 var(--space-4);
+  max-width: 56rem;
+  color: var(--ink);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+.reports-downloads__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reports-download {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.reports-download__btn {
+  width: 100%;
+  margin-top: 0;
+  min-height: var(--tap);
+}
+
+.reports-download__note {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+/* Empty until a download has been asked for; no permanent gap. */
+.reports-downloads__status:empty { display: none; }
+
+.reports-downloads__status {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.reports-chooser {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reports-chooser__item + .reports-chooser__item { margin-top: var(--space-3); }
+
+.reports-chooser__link { width: auto; }
+
+
+/* -----------------------------------------------------------------------
+   10. Reduced motion, forced colors and print
+   -------------------------------------------------------------------- */
+
+/* Visible focus everywhere on both screens. app.css sets this globally; it
+   is restated for the two controls that sit on a tinted surface, where a
+   default outline can disappear. */
+body[data-route="admin-audit"] .btn:focus-visible,
+body[data-route="admin-audit"] .input:focus-visible,
+body[data-route="admin-audit"] .select:focus-visible,
+body[data-route="admin-reports"] .btn:focus-visible,
+body[data-route="admin-reports"] .select:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .audit-row--key > * { background: Canvas; }
+  .audit-row--key .audit-table__time { box-shadow: none; border-left: 4px solid Highlight; }
+  .audit-action,
+  .reports-tile,
+  .reports-drift,
+  .reports-download { border-color: CanvasText; }
+  .audit-change__old { text-decoration: line-through; }
+}
+
+/* An admin printing the audit log wants the evidence, not the controls they
+   cannot press on paper. Same for the reports page: the numbers print, the
+   download buttons do not. */
+@media print {
+  body[data-route="admin-audit"] .audit-filters,
+  body[data-route="admin-audit"] .admin__actions,
+  body[data-route="admin-audit"] .audit-pager .btn,
+  body[data-route="admin-reports"] .admin__actions,
+  body[data-route="admin-reports"] .reports-downloads__list { display: none; }
+
+  .audit-table__scroll { overflow: visible; border: 0; }
+  .audit-table { min-width: 0; }
+
+  /* The append-only sentence is the point of a printed audit page. */
+  body[data-route="admin-audit"] .audit-notice {
+    border: 2px solid #000000;
+    color: #000000;
+    background: transparent;
+  }
+
+  .audit-row--key > * { background: transparent; }
+  .audit-row--key .audit-table__time { box-shadow: none; border-left: 4px solid #000000; }
+
+  .reports-tile,
+  .reports-drift { border-color: #000000; background: transparent; }
+}

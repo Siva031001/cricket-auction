@@ -535,10 +535,13 @@ docListeners.DOMContentLoaded.forEach((fn) => fn());
   go('/register/TRN_abc123');
   check('a public route is untouched by the admin guard', route() === 'register', route());
 
+  // Phase 3 landed, so /organiser/dashboard is no longer a placeholder — it is
+  // a real admin-guarded route. With no token the guard must bounce it to the
+  // sign-in page, exactly like the other guarded routes above. This assertion
+  // used to check for the placeholder text; that state no longer exists.
   go('/organiser/dashboard');
-  check('the Phase 3 placeholder is still there',
-    route() === 'organiser-dashboard' && appText().indexOf('Phase 3') !== -1,
-    appText().slice(0, 80));
+  check('an unauthenticated organiser is sent to sign in',
+    route() === 'admin-login', route());
 
   check('the setup warning rendered at boot is still on the page',
     byClass('banner--error').length >= 1);

@@ -130,9 +130,14 @@ const App = {
    * @const {!Array<{key:string, label:string, path:string}>}
    */
   NAV_ITEMS: [
-    { key: 'dashboard', label: 'Tournaments', path: '/admin/dashboard' },
-    { key: 'payments',  label: 'Payments',    path: '/admin/payments' },
-    { key: 'players',   label: 'Players',     path: '/admin/players' }
+    // Ordered by how an admin actually moves through a tournament: set it up,
+    // verify the money, check the register, then reporting and evidence.
+    { key: 'dashboard',  label: 'Tournaments', path: '/admin/dashboard' },
+    { key: 'payments',   label: 'Payments',    path: '/admin/payments' },
+    { key: 'players',    label: 'Players',     path: '/admin/players' },
+    { key: 'organisers', label: 'Organisers',  path: '/admin/organisers' },
+    { key: 'reports',    label: 'Reports',     path: '/admin/reports' },
+    { key: 'audit',      label: 'Audit log',   path: '/admin/audit' }
   ],
 
   /**
@@ -203,6 +208,86 @@ const App = {
       admin: true,
       navKey: 'players',
       tournament: true
+    },
+
+    /* ---- Phase 6 / 7: reports and the audit trail ---- */
+    {
+      path: '/admin/reports',
+      global: 'AdminReportsPage',
+      file: 'js/pages/admin-reports.js',
+      routeKey: 'admin-reports',
+      title: 'Reports',
+      admin: true,
+      navKey: 'reports',
+      tournament: true
+    },
+    {
+      path: '/admin/audit',
+      global: 'AdminAuditPage',
+      file: 'js/pages/admin-audit.js',
+      routeKey: 'admin-audit',
+      title: 'Audit log',
+      admin: true,
+      navKey: 'audit',
+      tournament: true
+    },
+
+    /* ---- Phase 3: organisers ---- */
+    {
+      path: '/admin/organisers',
+      global: 'AdminOrganisersPage',
+      file: 'js/pages/admin-organisers.js',
+      routeKey: 'admin-organisers',
+      title: 'Organisers',
+      admin: true,
+      navKey: 'organisers',
+      tournament: true
+    },
+    {
+      path: '/organiser/join',
+      global: 'OrganiserJoinPage',
+      file: 'js/pages/organiser-join.js',
+      routeKey: 'organiser-join',
+      title: 'Set your password',
+      admin: false
+      // Deliberately not admin-guarded: the organiser has no account yet. The
+      // one-time token in ?k= is the credential. Bouncing them to a sign-in
+      // form they cannot use would be a dead end.
+    },
+    {
+      path: '/organiser/dashboard',
+      global: 'OrganiserDashboardPage',
+      file: 'js/pages/organiser-dashboard.js',
+      routeKey: 'organiser-dashboard',
+      title: 'Teams',
+      admin: true
+      // No `tournament` guard: an organiser is bound to exactly one tournament,
+      // and the page resolves it itself (?t=, the join page's copy, then
+      // auth.me). Forcing the admin picker on them would be wrong.
+    },
+
+    /* ---- Phase 4: the live auction console ---- */
+    {
+      path: '/organiser/auction',
+      global: 'OrganiserAuctionPage',
+      file: 'js/pages/organiser-auction.js',
+      routeKey: 'organiser-auction',
+      title: 'Auction console',
+      admin: true
+      // Same reasoning as the organiser dashboard.
+    },
+
+    /* ---- Phase 5: the projector ---- */
+    {
+      path: '/auction/:tournamentId/display',
+      global: 'DisplayPage',
+      file: 'js/pages/display.js',
+      routeKey: 'display',
+      title: 'Auction display',
+      admin: false
+      // Public by design. Its credential is the tournament's display_token in
+      // ?k=, because this runs unattended on a venue laptop with nobody signed
+      // in. Read-only: it offers no controls and carries no personal data.
     }
   ],
 
@@ -395,6 +480,27 @@ const App = {
           break;
         case 'AdminPlayersPage':
           if (typeof AdminPlayersPage !== 'undefined') return AdminPlayersPage;
+          break;
+        case 'AdminReportsPage':
+          if (typeof AdminReportsPage !== 'undefined') return AdminReportsPage;
+          break;
+        case 'AdminAuditPage':
+          if (typeof AdminAuditPage !== 'undefined') return AdminAuditPage;
+          break;
+        case 'AdminOrganisersPage':
+          if (typeof AdminOrganisersPage !== 'undefined') return AdminOrganisersPage;
+          break;
+        case 'OrganiserJoinPage':
+          if (typeof OrganiserJoinPage !== 'undefined') return OrganiserJoinPage;
+          break;
+        case 'OrganiserDashboardPage':
+          if (typeof OrganiserDashboardPage !== 'undefined') return OrganiserDashboardPage;
+          break;
+        case 'OrganiserAuctionPage':
+          if (typeof OrganiserAuctionPage !== 'undefined') return OrganiserAuctionPage;
+          break;
+        case 'DisplayPage':
+          if (typeof DisplayPage !== 'undefined') return DisplayPage;
           break;
         default:
           break;

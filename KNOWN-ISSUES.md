@@ -43,6 +43,11 @@ Adding `max_registrations` is one field and one check. The cheapest option — o
 
 Cosmetic only. The fix is the pattern `Players.register` already uses.
 
+### 5a. Counter drift is now repairable from the UI — RESOLVED
+The reports screen detected drift between the cached team totals and the auction history, but only told the admin to "run team.recount" — an action name, not something they could do. It now carries a **Repair the stored totals** button that calls the action and reloads.
+
+The moment this is noticed is likely to be the evening before the auction. Telling someone to open the Apps Script editor then is not a repair path.
+
 ### 6. No bulk verify, by design
 `CONTRACTS-PHASE2.md` §5. A "verify all pending" button would defeat the point of a human checking each UPI reference against a bank statement. If it is ever wanted, it needs a decision, not a convenience button.
 
@@ -61,12 +66,12 @@ What exists instead: the lock-boundary test (upload order), the simulated double
 **Run the real test after deploying, before the auction.** This is the one that matters most.
 
 ### 9. Harnesses preserved — RESOLVED
-All 15 behavioural harnesses are now in `tools/harness/`, runnable with `node tools/test.js` (~1131 assertions). `tools/check.js` covers structure. Both are committed.
+All 18 behavioural harnesses are in `tools/harness/`, runnable with `node tools/test.js` (~1650 assertions). `tools/check.js` covers structure (11 checks). `npm test` runs both. All committed.
 
 ### 10. Stale harness assertion — RESOLVED
 The payments harness pinned `Audit.ACTIONS` at a count of 18; there are now 20. Replaced with an exact-set comparison, which is both stabler (legitimate additions do not break it spuriously) and stronger (it names what changed).
 
-### 10a. Offline replay must re-fetch the auction version — INTEGRATION REQUIRED
+### 10a. Offline replay re-fetches the auction version — RESOLVED
 **Two agents found this independently, which is why it is written down.**
 
 `auction.markSold` requires `expectedVersion` and rejects a stale one with `STALE_STATE` (§4.1 step 1). That check is what stops a stale browser tab acting on old data, and it must stay.
@@ -75,7 +80,7 @@ But a sale recorded offline captures a version that is guaranteed stale by the t
 
 So `Offline.sync(callFn)` takes an injected callback precisely so the caller can attach the *current* version to each item as it replays. `offline.js` classifies `STALE_STATE` as a hard stop with a specific hint, and warns at `enqueue` time if a payload already contains `expectedVersion`.
 
-**The auction console must implement that callback correctly.** No bypass was added on either side — the lock and the re-read still block a double sale.
+`OrganiserAuctionPage._syncCall` fetches the current version immediately before each replayed item. Guarded by mutation test M3 in `tools/harness/frontend/organiser-auction.test.js`: replaying the captured version instead of a fresh one makes the suite fail. No bypass was added on either side — the lock and the re-read still block a double sale.
 
 
 ### 13. Can Drive thumbnail URLs be read as bytes from the deployed origin?

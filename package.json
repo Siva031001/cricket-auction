@@ -11,7 +11,7 @@
     "Usage: npm run deploy -- <deploymentId>. Get the id from 'npx clasp deployments'.",
     "Use the SAME deploymentId every time - a new deployment means a NEW /exec",
     "URL and the frontend keeps calling the old code. See RUNBOOK.md Part 2.",
-    "There is no 'npm test'. Tests run in the Apps Script editor via",
+    "Tests: npm test runs tools/check.js (static) then tools/test.js (~1650 behavioural assertions in Node with faked Google services). The real suite is backend/Tests.gs, run from the Apps Script editor against a TEST sheet.",
     "runAllTests(), and only against a sheet whose Config env key is TEST."
   ],
   "scripts": {

@@ -79,6 +79,7 @@ const T = {
     userIds: [],       // fixture user_ids, so Sessions rows can be found
     emails: [],        // fixture emails, so login-failure counters can be cleared
     cacheTids: [],     // tournament ids whose cache/version keys must be purged
+    cacheKeys: [],     // individual CacheService keys with no tournament-wide API
     tids: [],          // fixture tournament ids that do NOT carry TID_PREFIX
     seq: 0,            // monotonic counter for unique fixture mobiles / upi refs
     mobileBase: ''     // run-unique middle digits of every fixture mobile number
@@ -88,7 +89,7 @@ const T = {
   reset() {
     T._state = {
       suites: [], results: [], current: null, startedAt: 0,
-      driveIds: [], userIds: [], emails: [], cacheTids: [], tids: [],
+      driveIds: [], userIds: [], emails: [], cacheTids: [], cacheKeys: [], tids: [],
       seq: 0, mobileBase: ''
     };
   },
@@ -137,6 +138,27 @@ const T = {
       if (T._state.driveIds[i].id === id) return;
     }
     T._state.driveIds.push({ id: id, kind: kind });
+  },
+
+  /**
+   * Registers a raw CacheService key for deletion.
+   *
+   * Cache.invalidate(tid) only drops the snapshot, on purpose (Cache.gs says so),
+   * and Phase 4 keeps two more keys per tournament that no module-level API
+   * removes: the projector's current-player pointer and the "this display token
+   * has already been checked" flag, whose key contains a hash of the token. A
+   * stale display-token flag would let a rotated token keep working for the next
+   * five minutes of the next run, which is exactly the behaviour that test is
+   * supposed to be able to prove is bounded.
+   *
+   * @param {string} key the exact cache key
+   * @return {string} the same key, so this can wrap an expression.
+   */
+  trackCacheKey(key) {
+    if (typeof key === 'string' && key && T._state.cacheKeys.indexOf(key) === -1) {
+      T._state.cacheKeys.push(key);
+    }
+    return key;
   },
 
   // ---------------------------------------------------------------------------
@@ -509,6 +531,12 @@ const T = {
     // alone. So the cleanup reaches past Cache to the durable store directly.
     T._state.cacheTids.forEach(tid => {
       try { Cache.invalidate(tid); } catch (e) { /* best effort */ }
+      // Auction.gs owns this key and offers no API to clear it. Left behind, the
+      // next run's projector would open on a player from this one.
+      try { Cache.del(AUCTION_CURRENT_PREFIX + tid); } catch (e) { /* best effort */ }
+    });
+    T._state.cacheKeys.forEach(key => {
+      try { Cache.del(key); } catch (e) { /* best effort */ }
     });
     try {
       const props = PropertiesService.getScriptProperties();
@@ -734,6 +762,10 @@ const Suites = {
     Suites.registration();
     Suites.playerList();
     Suites.paymentVerify();
+    Suites.organiser();
+    Suites.teams();
+    Suites.auction();
+    Suites.reports();
     Suites.repo();
     Suites.auth();
     Suites.cache();
@@ -743,6 +775,7 @@ const Suites = {
   /** @return {!Array<string>} the names, for the "unknown suite" error message. */
   names() {
     return ['Util', 'IST', 'Tournament', 'Registration', 'PlayerList', 'PaymentVerify',
+      'Organiser', 'Teams', 'Auction', 'Reports',
       'Repo', 'Auth', 'Cache', 'Drive'];
   },
 
@@ -3585,6 +3618,3242 @@ const Suites = {
   },
 
   // ===========================================================================
+  // Organiser — CONTRACTS-PHASE3.md §1. Rationale: DESIGN.md §5.4, §15, §16 risk 3.
+  //
+  // This suite is mostly about ONE SECRET: the one-time join token. It exists in
+  // exactly one place — the response to organiser.create and organiser.resendLink
+  // — and only its SHA-256 digest is ever written down. Three of the tests below
+  // are there to make that unfalsifiable rather than merely intended: the stored
+  // cell is compared against Util.sha256Hex(token), every cell of every tab is
+  // scanned for the plain value, and organiser.list is checked on the serialised
+  // wire rather than on its key names.
+  //
+  // A note on the clock. Auth.newJoinToken / isJoinPending / redeemJoinToken all
+  // compare against Date.now() directly, not Util.nowIso(), so Suites._withFakeNow
+  // CANNOT move a join-link expiry. An expiry test written with a fake clock would
+  // pass whether or not the check exists, which is worse than no test. The expired
+  // fixture therefore has its stored join_expires_at moved into the past instead.
+  // ===========================================================================
+
+  organiser() {
+    T.suite('Organiser', function () {
+      const admin = Suites._adminSession('orgadm');
+      const fx = {};
+
+      /** The tournament the fixture organisers belong to. */
+      function home() {
+        if (!fx.home) fx.home = Suites._seedTournament('orghome', { withFolders: false });
+        return fx.home;
+      }
+
+      /** A second tournament, so "only your own tournament" is testable. */
+      function other() {
+        if (!fx.other) fx.other = Suites._seedTournament('orgothr', { withFolders: false });
+        return fx.other;
+      }
+
+      /**
+       * Create one organiser through the real action and keep the plain token.
+       * @param {string} tag makes the fixture email unique within the run
+       * @param {string=} tournamentId defaults to the home tournament
+       * @return {{email:string, out:!Object, token:string, row:!Object}}
+       */
+      function invite(tag, tournamentId) {
+        const email = Suites._fixtureEmail(tag);
+        const out = Suites._call('organiser.create', {
+          tournamentId: tournamentId || home().tid,
+          email: email,
+          displayName: 'ZZ Organiser ' + tag
+        }, admin);
+        // organiser.create mints its own user_id, so cleanup has to be told about
+        // it before the Users row is the only place it exists.
+        T._state.userIds.push(out.user_id);
+        return {
+          email: email,
+          out: out,
+          token: Suites._joinToken(out.joinUrl),
+          row: Repo.findBy(SHEETS.USERS, 'user_id', out.user_id)
+        };
+      }
+
+      /** Redeem a join link through the real PUBLIC action. */
+      function join(token, password) {
+        return Suites._call('auth.organiserJoin',
+          { token: token, password: password, ua: 'zz-test-agent' }, null);
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('every organiser action is ADMIN-only over POST, and join is PUBLIC POST',
+        function () {
+          ['organiser.create', 'organiser.list', 'organiser.resendLink', 'organiser.disable']
+            .forEach(name => {
+              const r = Suites._route(name);
+              T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+              T.assert(r.methods.indexOf('GET') === -1,
+                name + ' must not be reachable over GET — organiser.create hands back a ' +
+                'one-time credential, and a GET route is callable from a link with no token');
+              T.assert(r.auth !== 'PUBLIC', name + ' must never be PUBLIC');
+              T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+                name + ' must allow ADMIN, got auth = ' + T._fmt(r.auth));
+              T.assert(!Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER),
+                name + ' is ADMIN only (CONTRACTS-PHASE3 §1). An organiser who could ' +
+                'call resendLink could mint a fresh credential for a colleague. Got ' +
+                'auth = ' + T._fmt(r.auth));
+            });
+
+          const join = Suites._route('auth.organiserJoin');
+          T.assertEqual(join.auth, 'PUBLIC',
+            'auth.organiserJoin has to be PUBLIC: the organiser has no account yet, so ' +
+            'there is no session token to authenticate with. The one-time token in the ' +
+            'payload is the credential.');
+          T.assert(join.methods.indexOf('POST') !== -1, 'auth.organiserJoin must accept POST');
+          T.assert(join.methods.indexOf('GET') === -1,
+            'auth.organiserJoin must NOT accept GET. On GET the join token would travel ' +
+            'in the query string and land in browser history, referrers and server logs ' +
+            '(DESIGN.md §5.3).');
+        });
+
+      // -----------------------------------------------------------------------
+      // The secret — CONTRACTS-PHASE3 §1 rule 2
+      // -----------------------------------------------------------------------
+
+      T.test('create stores only the SHA-256 digest; the joinUrl carries the plain token',
+        function () {
+          const f = invite('mint');
+          const token = f.token;
+
+          T.assert(typeof token === 'string' && token.length > 0,
+            'the joinUrl must carry a ?k= token, got ' + T._fmt(f.out.joinUrl));
+          T.assertEqual(f.out.joinUrl.indexOf(ORGANISER_JOIN_PATH + '?k=') !== -1, true,
+            'the link must point at ' + ORGANISER_JOIN_PATH + ', got ' +
+            T._fmt(f.out.joinUrl));
+          // 32 random bytes rendered as hex is 64 characters (CONTRACTS-PHASE3 §1).
+          T.assert(token.length >= 32,
+            'a 32-byte token cannot be this short: ' + token.length + ' characters');
+
+          // ======================= THE ONE THAT MATTERS =======================
+          // If the spreadsheet leaks, nothing in it may be redeemable. The stored
+          // cell must be the digest of the token and never the token itself.
+          // ====================================================================
+          T.assertEqual(f.row.join_token_hash, Util.sha256Hex(token),
+            'the Users row must store Util.sha256Hex(token). A hash that does not ' +
+            'match means either the plain token was written down or the redeem path ' +
+            'is hashing something else and no link will ever work.');
+          T.assert(f.row.join_token_hash !== token,
+            'the stored value must not BE the token');
+
+          T.assertEqual(f.row.role, ENUM.USER_ROLE.ORGANISER, 'the row is an ORGANISER');
+          T.assertEqual(f.row.status, ENUM.USER_STATUS.ACTIVE, 'and starts ACTIVE');
+          T.assertEqual(f.row.tournament_id, home().tid,
+            'locked to exactly one tournament (DESIGN.md §15)');
+          T.assertEqual(Util.isBlank(f.row.password_hash), true,
+            'there is no password until the link is redeemed — a blank hash can never ' +
+            'authenticate, which is what makes the un-redeemed account safe');
+          T.assertEqual(Util.isBlank(f.row.salt), true, 'and no salt either');
+          T.assertEqual(f.row.join_used_at, '', 'the link is unused');
+
+          // 72 hours (CONTRACTS-PHASE3 §1 rule 4). Measured against the real clock
+          // on purpose: newJoinToken() calls Date.now(), so a fake clock would not
+          // move this and the assertion would prove nothing.
+          const ttlMs = Date.parse(f.out.joinExpiresAt) - Date.now();
+          T.assertClose(ttlMs, Auth.JOIN_TOKEN_TTL_HOURS * 3600 * 1000, 5 * 60 * 1000,
+            'the link must live ' + Auth.JOIN_TOKEN_TTL_HOURS + ' hours — long enough to ' +
+            'survive a weekend, short enough to matter');
+          T.assertEqual(f.out.joinExpiresAtDisplay, Util.formatIST(f.out.joinExpiresAt),
+            'the admin has to tell somebody when the link dies, so the display form is ' +
+            'the IST wording of the same instant');
+
+          T.assertEqual(f.out.email, f.email.toLowerCase(), 'the email is echoed, normalised');
+          T.assertEqual(f.out.tournament_id, home().tid, 'and the tournament');
+
+          // Audited, without the secret in it.
+          const rows = Suites._auditRows(f.out.user_id, Audit.ACTIONS.ORGANISER_CREATED);
+          T.assertEqual(rows.length, 1, 'exactly one ORGANISER_CREATED row');
+          T.assertEqual(rows[0].tournament_id, home().tid, 'naming the tournament');
+          T.assert(JSON.stringify(rows[0]).indexOf(token) === -1,
+            'the audit row must not carry the plain token. The trail records that a ' +
+            'link was issued, never the secret that makes it usable.');
+        });
+
+      T.test('the plain token appears in NO cell of ANY tab', function () {
+        // Broader than checking the Users row: a well-meaning "let us log the link
+        // so support can resend it" would put the token in AuditLog or Config, and
+        // a check aimed only at Users would not see it.
+        const f = invite('nocell');
+        const token = f.token;
+        let cellsScanned = 0;
+
+        Object.keys(SHEETS).forEach(key => {
+          const tab = SHEETS[key];
+          let rows = [];
+          try {
+            rows = Repo.readAll(tab);
+          } catch (e) {
+            T._fail('could not read the ' + tab + ' tab to scan it: ' + T._errText(e));
+          }
+          rows.forEach(row => {
+            Object.keys(row).forEach(col => {
+              const cell = row[col];
+              if (typeof cell !== 'string' || !cell) return;
+              cellsScanned++;
+              T.assert(cell.indexOf(token) === -1,
+                'the plain join token is sitting in ' + tab + '.' + col + '. ' +
+                'CONTRACTS-PHASE3 §1 rule 2: it exists in the create response and ' +
+                'nowhere else, so that a leaked spreadsheet contains nothing redeemable.');
+            });
+          });
+        });
+
+        T.assert(cellsScanned > 0,
+          'the scan read no cells at all, so it proved nothing');
+      });
+
+      T.test('list returns the contracted fields and never the token or its hash',
+        function () {
+          const f = invite('listed');
+          const rows = Suites._call('organiser.list', { tournamentId: home().tid }, admin);
+          T.assert(Array.isArray(rows), 'organiser.list must return an array');
+
+          const mine = rows.filter(r => r.user_id === f.out.user_id);
+          T.assertEqual(mine.length, 1, 'the organiser just created must be in the list');
+
+          T.assertEqual(Object.keys(mine[0]).sort(), [
+            'created_at', 'display_name', 'email', 'joinPending', 'last_login_at',
+            'status', 'user_id'
+          ], 'the row shape is pinned by CONTRACTS-PHASE3 §1. An extra key here is how ' +
+             'join_token_hash ends up on an admin screen and then in a screenshot.');
+
+          T.assertEqual(mine[0].joinPending, true,
+            'joinPending is the one safe fact about a token: it is unused and unexpired');
+          T.assertEqual(mine[0].status, ENUM.USER_STATUS.ACTIVE, 'and the account is active');
+
+          // Key names are only half of it — assert on the serialised wire.
+          const wire = JSON.stringify(rows);
+          T.assert(wire.indexOf(f.token) === -1,
+            'the plain join token is somewhere in the organiser.list response');
+          T.assert(wire.indexOf(Util.sha256Hex(f.token)) === -1,
+            'the join token HASH is in the organiser.list response. It is not directly ' +
+            'redeemable, but it is the value an offline search would be run against and ' +
+            'CONTRACTS-PHASE3 §1 says never return it.');
+          ['join_token_hash', 'password_hash', 'salt', 'join_expires_at']
+            .forEach(needle => {
+              T.assert(wire.indexOf(needle) === -1,
+                'organiser.list carries the key "' + needle + '"');
+            });
+        });
+
+      T.test('create refuses a duplicate email and an unknown tournament', function () {
+        const f = invite('dupe');
+        const before = Repo.count(SHEETS.USERS, {});
+
+        T.assertThrows(() => Suites._call('organiser.create', {
+          tournamentId: home().tid, email: f.email, displayName: 'ZZ Second Try'
+        }, admin), ERR.VALIDATION_FAILED, 'the same email twice');
+
+        T.assertThrows(() => Suites._call('organiser.create', {
+          // Case-insensitive: Auth._normEmail lowercases, and two accounts that
+          // differ only in case would both match at login.
+          tournamentId: home().tid, email: f.email.toUpperCase(), displayName: 'ZZ Shouty'
+        }, admin), ERR.VALIDATION_FAILED, 'the same email in capitals');
+
+        T.assertThrows(() => Suites._call('organiser.create', {
+          tournamentId: 'TRN_zzzzzzzzzzzz', email: Suites._fixtureEmail('ghost'),
+          displayName: 'ZZ Ghost'
+        }, admin), ERR.NOT_FOUND,
+          'an organiser for a tournament that does not exist is an account nobody can use');
+
+        T.assertThrows(() => Suites._call('organiser.create', {
+          tournamentId: home().tid, email: 'not-an-email', displayName: 'ZZ Bad Email'
+        }, admin), ERR.VALIDATION_FAILED, 'an address with no @');
+
+        T.assertThrows(() => Suites._call('organiser.create', {
+          tournamentId: home().tid, email: Suites._fixtureEmail('noname'), displayName: '  '
+        }, admin), ERR.VALIDATION_FAILED, 'a blank display name');
+
+        T.assertEqual(Repo.count(SHEETS.USERS, {}), before,
+          'not one of those refusals may leave a Users row behind');
+      });
+
+      // -----------------------------------------------------------------------
+      // Redeeming — CONTRACTS-PHASE3 §1, auth.organiserJoin
+      // -----------------------------------------------------------------------
+
+      T.test('a join link works exactly once', function () {
+        const f = invite('once');
+
+        const first = join(f.token, TEST_FIXTURES.PASSWORD);
+        T.assert(first && typeof first.token === 'string' && first.token.length > 0,
+          'redeeming must return a real session token, got ' + T._fmt(first));
+        T.assertEqual(first.user.user_id, f.out.user_id, 'for the right user');
+        T.assertEqual(first.user.role, ENUM.USER_ROLE.ORGANISER, 'with the ORGANISER role');
+        T.assertEqual(first.user.tournament_id, home().tid, 'scoped to their tournament');
+        T.assert(!isNaN(Date.parse(first.expiresAt)),
+          'and a parseable expiry, got ' + T._fmt(first.expiresAt));
+        Suites._assertNoSecrets(first, 'the organiserJoin response');
+        T.assert(JSON.stringify(first).indexOf(f.token) === -1,
+          'the join token must not be echoed back in the session response');
+
+        const row = Repo.findBy(SHEETS.USERS, 'user_id', f.out.user_id);
+        T.assertEqual(row.join_token_hash, '',
+          'the token must be BURNED in the same locked section that sets the password. ' +
+          'A token that survives its own use is a permanent back door.');
+        T.assert(!Util.isBlank(row.join_used_at),
+          'and join_used_at records that it happened, got ' + T._fmt(row.join_used_at));
+        T.assert(!Util.isBlank(row.password_hash), 'the password is now set');
+        T.assert(!Util.isBlank(row.salt), 'with its own salt');
+
+        // The second attempt with the very same link.
+        T.assertThrows(() => join(f.token, 'AnotherPassw0rd!'), ERR.UNAUTHORIZED,
+          'the same link a second time must be refused');
+
+        const after = Repo.findBy(SHEETS.USERS, 'user_id', f.out.user_id);
+        T.assertEqual(after.password_hash, row.password_hash,
+          'and the refused second attempt must not have changed the password');
+
+        // joinPending is now false, which is the only thing the admin list may say.
+        const listed = Suites._call('organiser.list', { tournamentId: home().tid }, admin)
+          .filter(r => r.user_id === f.out.user_id)[0];
+        T.assertEqual(listed.joinPending, false, 'the link is no longer pending');
+
+        // Audited as a join (CONTRACTS-PHASE3 §1 rule 4).
+        const joined = Suites._auditRows(f.out.user_id, Audit.ACTIONS.ORGANISER_CREATED)
+          .map(r => Util.safeJsonParse(r.new_value, {}))
+          .filter(v => v && v.joined === true);
+        T.assertEqual(joined.length, 1,
+          'exactly one audit row marked joined:true (CONTRACTS-PHASE3 §1 rule 4)');
+      });
+
+      T.test('expired, garbage, blank and already-used all give the IDENTICAL message',
+        function () {
+          // ========================= THE SECURITY TEST =========================
+          // A message that distinguishes "already used" from "no such token" tells
+          // an attacker which tokens exist. That is the same enumeration oracle
+          // Auth.BAD_CREDENTIALS_MSG closes on the login path, and the four
+          // branches below must be indistinguishable from outside.
+          // =====================================================================
+
+          // Already used.
+          const used = invite('used');
+          join(used.token, TEST_FIXTURES.PASSWORD);
+          const usedErr = T.assertThrows(() => join(used.token, TEST_FIXTURES.PASSWORD),
+            ERR.UNAUTHORIZED, 'a link that has already been redeemed');
+
+          // Expired. The stored instant is moved into the past rather than the
+          // clock being faked: Auth.redeemJoinToken compares against Date.now(),
+          // so Suites._withFakeNow would not move this check and the test would
+          // pass whether or not the expiry exists.
+          const stale = invite('stale');
+          Repo.updateRow(SHEETS.USERS, stale.row._row,
+            { join_expires_at: '2020-01-01T00:00:00.000Z' });
+          Repo.flush();
+          const staleErr = T.assertThrows(() => join(stale.token, TEST_FIXTURES.PASSWORD),
+            ERR.UNAUTHORIZED, 'a link that expired in 2020');
+          T.assertEqual(
+            Util.isBlank(Repo.findBy(SHEETS.USERS, 'user_id', stale.out.user_id).password_hash),
+            true, 'and an expired link must not have set a password on the way past');
+
+          // Garbage, and blank.
+          const garbageErr = T.assertThrows(
+            () => join('zz-this-token-was-never-issued-by-anything', TEST_FIXTURES.PASSWORD),
+            ERR.UNAUTHORIZED, 'a token nobody ever issued');
+          const blankErr = T.assertThrows(() => join('', TEST_FIXTURES.PASSWORD),
+            ERR.UNAUTHORIZED, 'no token at all');
+
+          T.assertEqual(staleErr.message, usedErr.message,
+            'expired and already-used must read identically');
+          T.assertEqual(garbageErr.message, usedErr.message,
+            'unknown and already-used must read identically');
+          T.assertEqual(blankErr.message, usedErr.message,
+            'blank and already-used must read identically');
+          T.assertEqual(usedErr.message, Auth.BAD_JOIN_LINK_MSG,
+            'and all four must be the single generic sentence Auth.BAD_JOIN_LINK_MSG, ' +
+            'which also has to tell the organiser what to do next');
+          T.assert(String(usedErr.message).toLowerCase().indexOf('admin') !== -1,
+            'the one message has to name the way out — ask the admin for a new link. ' +
+            'Got "' + usedErr.message + '"');
+        });
+
+      T.test('a password under 10 characters is refused and the link still works after',
+        function () {
+          const f = invite('weakpw');
+
+          // CONTRACTS-PHASE3 §1 rule 2: identical to Auth.createUser.
+          T.assertEqual(Auth.MIN_PASSWORD_LEN, 10,
+            'the minimum is 10 characters (DESIGN.md §16 risk 6)');
+
+          const nine = 'zzShort9!';
+          T.assertEqual(nine.length, 9, 'fixture check: the weak password is 9 characters');
+          T.assertThrows(() => join(f.token, nine), ERR.VALIDATION_FAILED,
+            'nine characters is under the minimum');
+          T.assertThrows(() => join(f.token, ''), ERR.VALIDATION_FAILED,
+            'and a blank password is not a password');
+
+          // ================== THE HALF THAT IS EASY TO GET WRONG ================
+          // The password is validated INSIDE the lock but BEFORE anything is
+          // written, so a rejected password must leave the link fully usable. If
+          // the token were burned first, one typo would lock the organiser out
+          // permanently and the only way back would be an admin resend.
+          // ======================================================================
+          const mid = Repo.findBy(SHEETS.USERS, 'user_id', f.out.user_id);
+          T.assertEqual(mid.join_token_hash, Util.sha256Hex(f.token),
+            'the token must survive a rejected password');
+          T.assertEqual(mid.join_used_at, '', 'and must not be marked used');
+          T.assertEqual(Util.isBlank(mid.password_hash), true, 'and no password was set');
+
+          const ten = 'zzTenChar1';
+          T.assertEqual(ten.length, 10, 'fixture check: exactly at the boundary');
+          const ok = join(f.token, ten);
+          T.assert(ok && ok.token,
+            'exactly 10 characters is allowed, so the rule is >= 10 and not > 10');
+
+          // And the password that was set is the one that now signs them in.
+          const login = Auth.login(f.email, ten, 'zz-test-agent');
+          T.assertEqual(login.user.user_id, f.out.user_id,
+            'the password chosen at join must be the one that works at login');
+        });
+
+      T.test('resendLink invalidates the previous token', function () {
+        const f = invite('resend');
+        const first = f.token;
+
+        const again = Suites._call('organiser.resendLink', { userId: f.out.user_id }, admin);
+        const second = Suites._joinToken(again.joinUrl);
+        T.assert(second !== first, 'a resend must mint a NEW token, not repeat the old one');
+
+        const row = Repo.findBy(SHEETS.USERS, 'user_id', f.out.user_id);
+        T.assertEqual(row.join_token_hash, Util.sha256Hex(second),
+          'the stored digest must be the new token\'s');
+        T.assert(row.join_token_hash !== Util.sha256Hex(first),
+          'and no longer the old one\'s');
+
+        // The whole point: the link that got lost or forwarded stops working.
+        const oldErr = T.assertThrows(() => join(first, TEST_FIXTURES.PASSWORD),
+          ERR.UNAUTHORIZED, 'the superseded link must be dead');
+        T.assertEqual(oldErr.message, Auth.BAD_JOIN_LINK_MSG,
+          'and it must fail with the same generic sentence as everything else');
+
+        const ok = join(second, TEST_FIXTURES.PASSWORD);
+        T.assertEqual(ok.user.user_id, f.out.user_id, 'while the new link works');
+
+        T.assertEqual(
+          Suites._auditRows(f.out.user_id, Audit.ACTIONS.ORGANISER_LINK_RESENT).length, 1,
+          'a resend is audited: it is also the admin\'s password-reset path, so who ' +
+          'triggered it has to be answerable (CONTRACTS-PHASE3 §1)');
+
+        // A disabled account must not be handed a working link — that would
+        // silently undo the disable.
+        Suites._call('organiser.disable', { userId: f.out.user_id }, admin);
+        T.assertThrows(() => Suites._call('organiser.resendLink',
+          { userId: f.out.user_id }, admin), ERR.VALIDATION_FAILED,
+          're-enabling has to be a deliberate, separate decision');
+      });
+
+      // -----------------------------------------------------------------------
+      // disable — CONTRACTS-PHASE3 §1
+      // -----------------------------------------------------------------------
+
+      T.test('disable revokes live sessions, blocks login and kills an outstanding link',
+        function () {
+          const f = invite('kill');
+          const session = join(f.token, TEST_FIXTURES.PASSWORD);
+          const token = session.token;
+
+          T.assert(Auth.resolve(token) !== null,
+            'precondition: the session must be live before it is revoked');
+          T.assertEqual(Suites._dispatch('auth.me', {}, token, 'POST').ok, true,
+            'precondition: and usable through the real dispatcher');
+
+          const out = Suites._call('organiser.disable', { userId: f.out.user_id }, admin);
+          T.assertEqual(out.status, ENUM.USER_STATUS.DISABLED, 'the status comes back');
+          T.assert(out.sessions_revoked >= 1,
+            'at least the session created at join must be revoked, got ' +
+            T._fmt(out.sessions_revoked));
+
+          const row = Repo.findBy(SHEETS.USERS, 'user_id', f.out.user_id);
+          T.assert(row !== null,
+            'the row is never deleted — the audit trail references actor_user_id and a ' +
+            'deleted user turns every row that names them into an unresolvable id');
+          T.assertEqual(row.status, ENUM.USER_STATUS.DISABLED, 'and it says DISABLED');
+          T.assertEqual(row.join_token_hash, '',
+            'any outstanding join link is voided too: an unredeemed link on a disabled ' +
+            'account is a way back in');
+
+          // ==================== THE ONE THAT MATTERS ==========================
+          // Status alone is not enough. Auth.resolve reads the Sessions row, not
+          // the Users row, so a live token would keep working for up to twelve
+          // more hours — most of an auction.
+          // ====================================================================
+          T.assertEqual(Auth.resolve(token), null,
+            'the existing session must stop resolving the instant the account is ' +
+            'disabled, not when its twelve hours run out');
+
+          const refused = Suites._dispatch('auth.me', {}, token, 'POST');
+          T.assertEqual(refused.ok, false, 'and the dispatcher must refuse it');
+          T.assertEqual(refused.error.code, ERR.UNAUTHORIZED,
+            'a dead token is UNAUTHORIZED (CONTRACTS.md §3)');
+
+          const loginErr = T.assertThrows(
+            () => Auth.login(f.email, TEST_FIXTURES.PASSWORD, 'zz-test-agent'),
+            ERR.UNAUTHORIZED, 'and signing in again must not work either');
+          T.assertEqual(loginErr.message, Auth.BAD_CREDENTIALS_MSG,
+            'a disabled account gets the same sentence as a wrong password — saying ' +
+            '"this account is disabled" confirms the address exists');
+
+          T.assertEqual(
+            Suites._auditRows(f.out.user_id, Audit.ACTIONS.ORGANISER_DISABLED).length, 1,
+            'exactly one ORGANISER_DISABLED row');
+
+          // Safe to call twice.
+          let threw = null;
+          try {
+            Suites._call('organiser.disable', { userId: f.out.user_id }, admin);
+          } catch (e) {
+            threw = e;
+          }
+          T.assert(threw === null,
+            'disabling an already-disabled account is not an error, got ' + T._errText(threw));
+        });
+
+      // -----------------------------------------------------------------------
+      // Scope — DESIGN.md §5.4, the boundary Auth.requireTournament defends
+      // -----------------------------------------------------------------------
+
+      T.test('an organiser can only reach their own tournament', function () {
+        const f = invite('scope');
+        const session = join(f.token, TEST_FIXTURES.PASSWORD);
+        const token = session.token;
+        const mine = home().tid;
+        const theirs = other().tid;
+
+        // Through the real front door, because that is where the role check lives.
+        const own = Suites._dispatch('team.list', { tournamentId: mine }, token, 'POST');
+        T.assertEqual(own.ok, true,
+          'an organiser must be able to work in their own tournament, got ' +
+          T._fmt(own.error));
+
+        const across = Suites._dispatch('team.list', { tournamentId: theirs }, token, 'POST');
+        T.assertEqual(across.ok, false,
+          'reading another tournament\'s teams must be refused. Auth.requireTournament ' +
+          'is the only thing standing between one organiser and another organiser\'s ' +
+          'data (DESIGN.md §5.4).');
+        T.assertEqual(across.error.code, ERR.FORBIDDEN,
+          'a valid token pointed at the wrong tournament is FORBIDDEN, not UNAUTHORIZED ' +
+          '(CONTRACTS.md §3)');
+        T.assert(JSON.stringify(across).indexOf(theirs) === -1 ||
+          String(across.error.message).indexOf('team') === -1,
+          'the refusal must not describe the other tournament\'s contents');
+
+        // Blank scope fails closed, rather than matching everything.
+        const blank = Suites._dispatch('team.list', { tournamentId: '' }, token, 'POST');
+        T.assertEqual(blank.ok, false, 'a missing tournament id must fail, not fall through');
+
+        // And the ADMIN-only surface stays shut to them.
+        ['organiser.list', 'organiser.create', 'organiser.resendLink', 'organiser.disable']
+          .forEach(action => {
+            const res = Suites._dispatch(action, { tournamentId: mine }, token, 'POST');
+            T.assertEqual(res.ok, false, action + ' must be refused to an organiser');
+            T.assertEqual(res.error.code, ERR.FORBIDDEN,
+              action + ' with a valid organiser token is FORBIDDEN');
+          });
+      });
+    });
+  },
+
+  // ===========================================================================
+  // Teams — CONTRACTS-PHASE3.md §2, §3, §4. Rationale: DESIGN.md §6.4, §17, §31.
+  //
+  // Two ideas run through the whole suite.
+  //
+  //   1. NOTHING IS FROZEN. Purse, squad size and name all stay changeable, and
+  //      the only rejections are the ones that would make existing data
+  //      contradictory. So every guard test also asserts the exact boundary value
+  //      is ALLOWED — a rule of "not below X" that quietly means "below or equal
+  //      to X" blocks a legitimate correction mid-auction.
+  //
+  //   2. purse_used AND players_count ARE A CACHE. AuctionResults is the truth
+  //      (DESIGN.md §2.6). Phase 3 only ever writes zeros, so the fixtures that
+  //      need a non-zero counter set it through Repo directly and say so — going
+  //      through an action would mean running a Phase 4 sale to test a Phase 3
+  //      guard.
+  // ===========================================================================
+
+  teams() {
+    T.suite('Teams', function () {
+      const admin = Suites._adminSession('tmadm');
+      const fx = {};
+
+      /** A tournament carrying the seeded defaults: purse 1000000, squad 14. */
+      function defaults() {
+        if (!fx.defaults) fx.defaults = Suites._seedTournament('tmdef', { withFolders: false });
+        return fx.defaults;
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('team actions are POST-only, with delete and recount reserved to ADMIN',
+        function () {
+          ['team.create', 'team.createBatch', 'team.list', 'team.squad', 'team.update']
+            .forEach(name => {
+              const r = Suites._route(name);
+              T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+              T.assert(r.methods.indexOf('GET') === -1, name + ' must not be offered on GET');
+              T.assert(r.auth !== 'PUBLIC', name + ' must never be PUBLIC');
+              T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+                name + ' must allow ADMIN, got auth = ' + T._fmt(r.auth));
+              T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER),
+                name + ' must allow ORGANISER — building the 8 teams is the organiser\'s ' +
+                'job (CONTRACTS-PHASE3 §2). Got auth = ' + T._fmt(r.auth));
+            });
+
+          ['team.delete', 'team.recount'].forEach(name => {
+            const r = Suites._route(name);
+            T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+            T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+              name + ' must allow ADMIN, got auth = ' + T._fmt(r.auth));
+            T.assert(!Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER),
+              name + ' is ADMIN only: a delete cannot be undone from the UI and a ' +
+              'recount overwrites live counters. Got auth = ' + T._fmt(r.auth));
+          });
+        });
+
+      // -----------------------------------------------------------------------
+      // create — CONTRACTS-PHASE3 §2
+      // -----------------------------------------------------------------------
+
+      T.test('create falls back to the tournament defaults, and takes explicit values',
+        function () {
+          const t = defaults();
+          const trn = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', t.tid);
+          T.assertEqual(trn.default_purse, 1000000, 'fixture check: the tournament default purse');
+          T.assertEqual(trn.default_max_players, 14, 'fixture check: the default squad size');
+
+          const fell = Suites._call('team.create',
+            { tournamentId: t.tid, teamName: 'ZZ Falls Back' }, admin);
+          T.assertEqual(fell.purse_total, 1000000,
+            'an omitted purseTotal must take default_purse — that is what the column is ' +
+            'for, so an organiser creating 8 equal-purse teams types the figure once ' +
+            '(DESIGN.md §6.4)');
+          T.assertEqual(fell.max_players, 14, 'and an omitted maxPlayers takes the default');
+          T.assertEqual(fell.purse_used, 0, 'a new team has spent nothing');
+          T.assertEqual(fell.players_count, 0, 'and bought nobody');
+          T.assertEqual(fell.team_id.slice(0, ID_PREFIX.TEAM.length), ID_PREFIX.TEAM,
+            'team_id prefix (CONTRACTS.md §4)');
+
+          const given = Suites._call('team.create', {
+            tournamentId: t.tid, teamName: '  ZZ   Explicit  Team  ',
+            ownerName: 'ZZ Owner', purseTotal: 750000, maxPlayers: 12
+          }, admin);
+          T.assertEqual(given.purse_total, 750000, 'an explicit purse wins over the default');
+          T.assertEqual(given.max_players, 12, 'and an explicit squad size');
+          T.assertEqual(given.team_name, 'ZZ Explicit Team',
+            'whitespace runs are collapsed for storage, but the organiser\'s own ' +
+            'capitalisation is kept — only the matching is normalised');
+          T.assertEqual(given.owner_name, 'ZZ Owner', 'the optional owner is stored');
+
+          const row = Repo.findBy(SHEETS.TEAMS, 'team_id', given.team_id);
+          T.assertEqual(row.purse_used, 0, 'the stored counters start at zero');
+          T.assertEqual(row.players_count, 0, 'both of them');
+          T.assertEqual(row.tournament_id, t.tid, 'and the row is scoped to the tournament');
+
+          T.assertEqual(Suites._auditRows(given.team_id, Audit.ACTIONS.TEAM_CREATED).length, 1,
+            'exactly one TEAM_CREATED row');
+
+          // The field-level rules from CONTRACTS-PHASE3 §2.
+          [[{ teamName: 'Z' }, 'a one-character name is under the 2-char minimum'],
+           [{ teamName: 'Z'.repeat(41) }, '41 characters is over the 40-char maximum'],
+           [{ teamName: '   ' }, 'whitespace is not a name'],
+           [{ teamName: 'ZZ Zero Squad', maxPlayers: 0 }, 'a squad size of 0'],
+           [{ teamName: 'ZZ Frac Squad', maxPlayers: '12.7' }, 'a fractional squad size']
+          ].forEach(pair => {
+            const payload = { tournamentId: t.tid };
+            Object.keys(pair[0]).forEach(k => { payload[k] = pair[0][k]; });
+            T.assertThrows(() => Suites._call('team.create', payload, admin),
+              ERR.VALIDATION_FAILED, pair[1]);
+          });
+          [[{ teamName: 'ZZ Free Team', purseTotal: 0 }, 'a purse of zero'],
+           [{ teamName: 'ZZ Debt Team', purseTotal: -1 }, 'a negative purse']
+          ].forEach(pair => {
+            const payload = { tournamentId: t.tid };
+            Object.keys(pair[0]).forEach(k => { payload[k] = pair[0][k]; });
+            T.assertThrows(() => Suites._call('team.create', payload, admin),
+              ERR.INVALID_AMOUNT, pair[1]);
+          });
+        });
+
+      T.test('a name that differs only by case or whitespace is a duplicate', function () {
+        // Two teams whose names differ by a stray space are indistinguishable on a
+        // projector screen, so they must not both exist (CONTRACTS-PHASE3 §2).
+        const t = Suites._seedTournament('tmdupe', { withFolders: false });
+        Suites._call('team.create',
+          { tournamentId: t.tid, teamName: 'Chennai Warriors' }, admin);
+        const before = Repo.count(SHEETS.TEAMS, { tournament_id: t.tid });
+
+        ['Chennai Warriors', 'chennai warriors', 'CHENNAI WARRIORS',
+         'Chennai  Warriors', '  Chennai Warriors  '].forEach(name => {
+          const e = T.assertThrows(() => Suites._call('team.create',
+            { tournamentId: t.tid, teamName: name }, admin),
+            ERR.VALIDATION_FAILED, '"' + name + '" is the same team');
+          T.assert(String(e.message).indexOf('Chennai Warriors') !== -1,
+            'the message has to name the team that clashes so the organiser can see ' +
+            'which one, got "' + e.message + '"');
+        });
+
+        // A near miss is a different team and must go through.
+        Suites._call('team.create',
+          { tournamentId: t.tid, teamName: 'ChennaiWarriors' }, admin);
+
+        T.assertEqual(Repo.count(SHEETS.TEAMS, { tournament_id: t.tid }), before + 1,
+          'five refusals and one genuine create must leave exactly one new row');
+
+        // Uniqueness is PER TOURNAMENT, not global.
+        const elsewhere = Suites._seedTournament('tmdupe2', { withFolders: false });
+        let threw = null;
+        try {
+          Suites._call('team.create',
+            { tournamentId: elsewhere.tid, teamName: 'Chennai Warriors' }, admin);
+        } catch (e) {
+          threw = e;
+        }
+        T.assert(threw === null,
+          'the same team name in a DIFFERENT tournament is fine, got ' + T._errText(threw));
+      });
+
+      // -----------------------------------------------------------------------
+      // createBatch — the main path, and the all-or-nothing rule
+      // -----------------------------------------------------------------------
+
+      T.test('a batch with a duplicate at position 7 writes NOTHING', function () {
+        // ======================= THE ONE THAT MATTERS =========================
+        // Half a batch is worse than none: the organiser then has to work out
+        // which of their 8 names got through before retrying. The whole batch is
+        // validated before any of it is written (CONTRACTS-PHASE3 §2).
+        // ======================================================================
+        const t = Suites._seedTournament('tmbatch', { withFolders: false });
+        const count = () => Repo.count(SHEETS.TEAMS, { tournament_id: t.tid });
+        T.assertEqual(count(), 0, 'fixture check: the tournament starts with no teams');
+
+        // Case 1: the clash is inside the batch itself, at position 7.
+        const selfClash = ['ZZ Batch One', 'ZZ Batch Two', 'ZZ Batch Three', 'ZZ Batch Four',
+          'ZZ Batch Five', 'ZZ Batch Six', 'zz  batch   two', 'ZZ Batch Eight'];
+        const e1 = T.assertThrows(() => Suites._call('team.createBatch',
+          { tournamentId: t.tid, names: selfClash, purseTotal: 500000, maxPlayers: 13 }, admin),
+          ERR.VALIDATION_FAILED, 'names 2 and 7 are the same team');
+        T.assert(String(e1.message).indexOf('7') !== -1,
+          'the message must say WHICH position is wrong, got "' + e1.message + '"');
+        T.assertEqual(count(), 0,
+          'a duplicate at position 7 must not leave 6 teams created. The row count is ' +
+          'still the only honest way to check that.');
+
+        // Case 2: the clash is against a team that already exists — a different
+        // code path, because that check happens inside the lock.
+        Suites._call('team.create', { tournamentId: t.tid, teamName: 'ZZ Batch Seven' }, admin);
+        T.assertEqual(count(), 1, 'one team now exists');
+
+        const existingClash = selfClash.slice();
+        existingClash[6] = 'zz batch  seven';
+        const e2 = T.assertThrows(() => Suites._call('team.createBatch',
+          { tournamentId: t.tid, names: existingClash, purseTotal: 500000, maxPlayers: 13 },
+          admin), ERR.VALIDATION_FAILED, 'name 7 collides with an existing team');
+        T.assert(String(e2.message).indexOf('7') !== -1,
+          'the message must name the position, got "' + e2.message + '"');
+        T.assertEqual(count(), 1,
+          'the clash was found in pass 2, inside the lock, and still nothing was written');
+
+        // Case 3: a clean batch of 8 goes through in one go.
+        const clean = ['ZZ Ok One', 'ZZ Ok Two', 'ZZ Ok Three', 'ZZ Ok Four',
+          'ZZ Ok Five', 'ZZ Ok Six', 'ZZ Ok Seven', 'ZZ Ok Eight'];
+        const out = Suites._call('team.createBatch',
+          { tournamentId: t.tid, names: clean, purseTotal: 500000, maxPlayers: 13 }, admin);
+        T.assertEqual(out.created.length, 8, 'all 8 come back');
+        T.assertEqual(out.created.map(c => c.team_name), clean,
+          'in the order they were typed');
+        T.assertEqual(count(), 9, 'and 8 rows were added to the 1 already there');
+        out.created.forEach(c => {
+          T.assertEqual(c.purse_total, 500000, 'the shared purse is applied to every team');
+          T.assertEqual(c.max_players, 13, 'and the shared squad size');
+          T.assertEqual(c.purse_used, 0, 'counters start at zero');
+          T.assertEqual(c.players_count, 0, 'both of them');
+        });
+
+        // One audit row PER TEAM, not one for the batch: the trail is read by
+        // entity_id when somebody asks who set a team's purse (DESIGN.md §42).
+        out.created.forEach(c => {
+          T.assertEqual(Suites._auditRows(c.team_id, Audit.ACTIONS.TEAM_CREATED).length, 1,
+            'team ' + c.team_name + ' needs its own TEAM_CREATED row');
+        });
+
+        // An empty list is a mistake, not an expensive no-op.
+        T.assertThrows(() => Suites._call('team.createBatch',
+          { tournamentId: t.tid, names: [] }, admin), ERR.VALIDATION_FAILED,
+          'an empty names list');
+        T.assertEqual(count(), 9, 'and it changed nothing');
+      });
+
+      // -----------------------------------------------------------------------
+      // update — every guard in CONTRACTS-PHASE3 §2, plus both boundaries
+      // -----------------------------------------------------------------------
+
+      T.test('lowering the squad below players_count is refused, the exact count allowed',
+        function () {
+          const t = Suites._seedTournament('tmsquad', { withFolders: false });
+          // The counters are set through Repo on purpose. Phase 3 only ever writes
+          // zeros; Phase 4 maintains them inside the sale lock. This test is about
+          // the guard, not about the sale that would produce the number.
+          const team = Suites._seedTeam(t.tid, {
+            team_name: 'Chennai Warriors', purse_total: 1000000, purse_used: 400000,
+            max_players: 13, players_count: 12
+          });
+
+          const e = T.assertThrows(() => Suites._call('team.update',
+            { teamId: team.team_id, maxPlayers: 11 }, admin),
+            ERR.SQUAD_BELOW_COUNT, 'a limit of 11 with 12 players already bought');
+          T.assert(String(e.message).indexOf('12') !== -1 &&
+            String(e.message).indexOf('11') !== -1 &&
+            String(e.message).indexOf('Chennai Warriors') !== -1,
+            'the message must name the team, the current count and the value that was ' +
+            'refused (DESIGN.md §6.4), got "' + e.message + '"');
+
+          let after = Repo.findBy(SHEETS.TEAMS, 'team_id', team.team_id);
+          T.assertEqual(after.max_players, 13, 'a refused change must leave the row alone');
+          T.assertEqual(after.players_count, 12, 'and must not touch the counter either');
+
+          // The boundary itself. "Not below players_count" has to mean exactly that.
+          const ok = Suites._call('team.update',
+            { teamId: team.team_id, maxPlayers: 12 }, admin);
+          T.assertEqual(ok.max_players, 12,
+            'a squad size EQUAL to the current count is legal: the team is full, not ' +
+            'over-full. Refusing it would block a legitimate 13 -> 12 correction.');
+          T.assertEqual(ok.slots_remaining, 0, 'and the team now has no slots left');
+          T.assertEqual(ok.changed.max_players, { from: 13, to: 12 },
+            'the response says what moved, so the confirmation can state the effect');
+
+          // Raising is always free, including past the original value.
+          const raised = Suites._call('team.update',
+            { teamId: team.team_id, maxPlayers: 15 }, admin);
+          T.assertEqual(raised.max_players, 15, 'raising a squad size is never guarded');
+
+          after = Repo.findBy(SHEETS.TEAMS, 'team_id', team.team_id);
+          T.assertEqual(after.max_players, 15, 'and the row followed');
+          T.assertEqual(
+            Suites._auditRows(team.team_id, Audit.ACTIONS.TEAM_UPDATED).length, 2,
+            'two accepted changes, two audit rows — and the refusal wrote none');
+        });
+
+      T.test('lowering the purse below purse_used is refused, the exact spend allowed',
+        function () {
+          const t = Suites._seedTournament('tmpurse', { withFolders: false });
+          const team = Suites._seedTeam(t.tid, {
+            team_name: 'Madurai Kings', purse_total: 1000000, purse_used: 400000,
+            max_players: 13, players_count: 4
+          });
+
+          const e = T.assertThrows(() => Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 399999 }, admin),
+            ERR.PURSE_BELOW_SPENT, 'one rupee below what is already spent');
+          T.assert(String(e.message).indexOf(Util.formatINR(400000)) !== -1,
+            'the message must name the amount already spent (CONTRACTS-PHASE3 §2), got "' +
+            e.message + '"');
+
+          let after = Repo.findBy(SHEETS.TEAMS, 'team_id', team.team_id);
+          T.assertEqual(after.purse_total, 1000000, 'a refused change must leave the row alone');
+          T.assertEqual(after.purse_used, 400000, 'and must not touch the spend');
+
+          const ok = Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 400000 }, admin);
+          T.assertEqual(ok.purse_total, 400000,
+            'a purse EXACTLY equal to what has been spent is legal — the team simply has ' +
+            'nothing left, which is a real state and not a contradiction');
+          T.assertEqual(ok.purse_remaining, 0, 'and nothing remains');
+          T.assertEqual(ok.per_slot_remaining, 0,
+            'with 9 slots and no money, the honest per-slot figure is 0');
+
+          const raised = Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 2000000 }, admin);
+          T.assertEqual(raised.purse_total, 2000000, 'raising a purse is never guarded');
+
+          // A rename must still be unique, and a no-op is a no-op.
+          Suites._seedTeam(t.tid, { team_name: 'ZZ Taken Name' });
+          T.assertThrows(() => Suites._call('team.update',
+            { teamId: team.team_id, teamName: 'zz  taken   name' }, admin),
+            ERR.VALIDATION_FAILED, 'a rename onto an existing name');
+
+          const same = Suites._call('team.update',
+            { teamId: team.team_id, teamName: 'Madurai Kings' }, admin);
+          T.assertEqual(same.changed, {},
+            'saving the form without changing anything is a no-op success, not an error ' +
+            '(DESIGN.md §15) — and nothing is audited, because nothing happened');
+
+          after = Repo.findBy(SHEETS.TEAMS, 'team_id', team.team_id);
+          T.assertEqual(after.purse_total, 2000000, 'the last accepted value stands');
+          T.assertEqual(
+            Suites._auditRows(team.team_id, Audit.ACTIONS.TEAM_UPDATED).length, 2,
+            'two real changes, two rows: the refusals and the no-op wrote none');
+        });
+
+      // -----------------------------------------------------------------------
+      // list — per_slot_remaining is the number that matters (DESIGN.md §6.5a)
+      // -----------------------------------------------------------------------
+
+      T.test('per_slot_remaining is floor(remaining / slots), and null for a full squad',
+        function () {
+          const t = Suites._seedTournament('tmslots', { withFolders: false });
+          Suites._seedTeam(t.tid, {
+            team_name: 'ZZ A Normal', purse_total: 1000000, purse_used: 400000,
+            max_players: 13, players_count: 3
+          });
+          Suites._seedTeam(t.tid, {
+            team_name: 'ZZ B Full', purse_total: 1000000, purse_used: 900000,
+            max_players: 5, players_count: 5
+          });
+          Suites._seedTeam(t.tid, {
+            team_name: 'ZZ C Broke', purse_total: 500000, purse_used: 500000,
+            max_players: 10, players_count: 4
+          });
+          Suites._seedTeam(t.tid, {
+            team_name: 'ZZ D Rounding', purse_total: 100, purse_used: 0,
+            max_players: 3, players_count: 0
+          });
+
+          const res = Suites._call('team.list', { tournamentId: t.tid }, admin);
+          const byName = {};
+          res.teams.forEach(r => { byName[r.team_name] = r; });
+          T.assertEqual(res.teams.length, 4, 'all four teams come back');
+
+          const normal = byName['ZZ A Normal'];
+          T.assertEqual(normal.purse_remaining, 600000, '1000000 - 400000');
+          T.assertEqual(normal.slots_remaining, 10, '13 - 3');
+          T.assertEqual(normal.per_slot_remaining, 60000, '600000 / 10');
+          T.assertEqual(normal.per_slot_remaining_display, Util.formatINR(60000),
+            'the display form is the same number, ₹-formatted');
+          T.assertEqual(normal.purse_remaining_display, Util.formatINR(600000),
+            'and so is purse_remaining_display');
+
+          const full = byName['ZZ B Full'];
+          T.assertEqual(full.slots_remaining, 0, 'a full squad has no slots left');
+          T.assertEqual(full.per_slot_remaining, null,
+            'null, not 0. "Nothing left to spend per slot" and "no slots left to spend ' +
+            'on" are different facts and the dashboard renders them differently.');
+          T.assertEqual(full.per_slot_remaining_display, '',
+            'and the display form is blank, so the page decides how to word it');
+
+          const broke = byName['ZZ C Broke'];
+          T.assertEqual(broke.purse_remaining, 0, 'a team spent to exactly zero');
+          T.assertEqual(broke.slots_remaining, 6, 'still has slots to fill');
+          T.assertEqual(broke.per_slot_remaining, 0,
+            'so per_slot_remaining is 0 — the honest number, and the one that tells the ' +
+            'organiser this team is in trouble (DESIGN.md §6.5a)');
+          T.assertEqual(broke.per_slot_remaining_display, Util.formatINR(0),
+            'and it still renders, because 0 is a value');
+
+          T.assertEqual(byName['ZZ D Rounding'].per_slot_remaining, 33,
+            'floor(100 / 3) = 33, never 33.33 — money is whole rupees (CONTRACTS.md §1.6)');
+
+          T.assertEqual(res.totals, {
+            teams: 4,
+            purse_total: 1000000 + 1000000 + 500000 + 100,
+            purse_used: 400000 + 900000 + 500000 + 0,
+            purse_remaining: 600000 + 100000 + 0 + 100,
+            players_count: 3 + 5 + 4 + 0,
+            slots_total: 13 + 5 + 10 + 3,
+            slots_remaining: 10 + 0 + 6 + 3
+          }, 'the totals row is the sum of the columns above it');
+
+          T.assertEqual(Object.keys(res.teams[0]).sort(), [
+            'logo_url', 'max_players', 'owner_name', 'per_slot_remaining',
+            'per_slot_remaining_display', 'players_count', 'purse_remaining',
+            'purse_remaining_display', 'purse_total', 'purse_total_display', 'purse_used',
+            'purse_used_display', 'slots_remaining', 'team_id', 'team_name'
+          ], 'the dashboard row shape is pinned by CONTRACTS-PHASE3 §2');
+        });
+
+      // -----------------------------------------------------------------------
+      // delete — CONTRACTS-PHASE3 §2
+      // -----------------------------------------------------------------------
+
+      T.test('delete is refused while the team has players, and allowed when empty',
+        function () {
+          const t = Suites._seedTournament('tmdel', { withFolders: false });
+          const occupied = Suites._seedTeam(t.tid, {
+            team_name: 'ZZ Has Players', purse_used: 300000, players_count: 2
+          });
+          const empty = Suites._seedTeam(t.tid, { team_name: 'ZZ Is Empty' });
+          const drifted = Suites._seedTeam(t.tid, { team_name: 'ZZ Drifted' });
+
+          const e = T.assertThrows(() => Suites._call('team.delete',
+            { teamId: occupied.team_id }, admin), ERR.TEAM_NOT_EMPTY,
+            'deleting a team with a squad would orphan those players and charge their ' +
+            'money against nothing');
+          T.assert(String(e.message).indexOf('2') !== -1,
+            'the message must say how many players are in the way, got "' + e.message + '"');
+          T.assert(Repo.findBy(SHEETS.TEAMS, 'team_id', occupied.team_id) !== null,
+            'and the row must still be there');
+
+          // The second guard: the cached counter says zero but AuctionResults —
+          // the truth — says otherwise. A delete cannot be undone from the UI, so
+          // the extra read is worth it.
+          Suites._seedResult(t.tid, {
+            team_id: drifted.team_id, status: ENUM.RESULT_STATUS.SOLD, amount: 90000,
+            serial_no: 1, is_current: true
+          });
+          T.assertEqual(Repo.findBy(SHEETS.TEAMS, 'team_id', drifted.team_id).players_count, 0,
+            'fixture check: the cached counter has drifted to zero');
+          const e2 = T.assertThrows(() => Suites._call('team.delete',
+            { teamId: drifted.team_id }, admin), ERR.TEAM_NOT_EMPTY,
+            'a team whose counter says empty but whose auction record says otherwise');
+          T.assert(String(e2.message).toLowerCase().indexOf('recount') !== -1,
+            'and the message has to point at the fix, got "' + e2.message + '"');
+
+          const out = Suites._call('team.delete', { teamId: empty.team_id }, admin);
+          T.assertEqual(out.deleted, true, 'an empty team deletes');
+          T.assertEqual(out.team_name, 'ZZ Is Empty', 'and says which one');
+          T.assertEqual(Repo.findBy(SHEETS.TEAMS, 'team_id', empty.team_id), null,
+            'the row is gone');
+
+          const audit = Suites._auditRows(empty.team_id, Audit.ACTIONS.TEAM_DELETED);
+          T.assertEqual(audit.length, 1, 'exactly one TEAM_DELETED row');
+          const prev = Util.safeJsonParse(audit[0].prev_value, null);
+          T.assert(prev !== null && prev.team_name === 'ZZ Is Empty',
+            'and it carries the whole row, because after this there is nothing left to ' +
+            'look up (DESIGN.md §42)');
+        });
+
+      // -----------------------------------------------------------------------
+      // recount — CONTRACTS-PHASE3 §3
+      // -----------------------------------------------------------------------
+
+      T.test('recount rebuilds the counters from AuctionResults, ignoring superseded rows',
+        function () {
+          const t = Suites._seedTournament('tmrecnt', { withFolders: false });
+          const one = Suites._seedTeam(t.tid, {
+            team_name: 'ZZ Recount One', purse_total: 2000000,
+            purse_used: 999999, players_count: 9        // deliberately wrong
+          });
+          const two = Suites._seedTeam(t.tid, {
+            team_name: 'ZZ Recount Two', purse_total: 2000000,
+            purse_used: 0, players_count: 0             // deliberately wrong the other way
+          });
+          const untouched = Suites._seedTeam(t.tid, { team_name: 'ZZ Recount Three' });
+
+          Suites._seedResult(t.tid, { team_id: one.team_id, serial_no: 1, amount: 100000 });
+          Suites._seedResult(t.tid, { team_id: one.team_id, serial_no: 2, amount: 250000 });
+          // ==================== THE ONE THAT MATTERS =========================
+          // A superseded row is history, not a live fact. A Phase 7 correction
+          // wrote a new current row and flipped this one, so replaying only the
+          // current rows is what reproduces the state the corrections left behind
+          // (DESIGN.md §2.6, §6.7). Counting it would put ₹9,00,000 back.
+          // ===================================================================
+          Suites._seedResult(t.tid, {
+            team_id: one.team_id, serial_no: 2, amount: 900000, is_current: false
+          });
+          Suites._seedResult(t.tid, { team_id: two.team_id, serial_no: 3, amount: 50000 });
+          // Not a sale, so it moves no money and fills no slot.
+          Suites._seedResult(t.tid, {
+            serial_no: 4, status: ENUM.RESULT_STATUS.UNSOLD, amount: '', team_id: ''
+          });
+          // Another tournament's sale must never be counted here (DESIGN.md §39).
+          const elsewhere = Suites._seedTournament('tmrecnt2', { withFolders: false });
+          Suites._seedResult(elsewhere.tid, {
+            team_id: one.team_id, serial_no: 5, amount: 777777
+          });
+
+          const report = Suites._call('team.recount', { tournamentId: t.tid }, admin);
+
+          T.assertEqual(report.sold_rows_counted, 3,
+            'three current SOLD rows in this tournament: the superseded one, the UNSOLD ' +
+            'one and the other tournament\'s must all be skipped');
+          T.assertEqual(report.teams_checked, 3, 'every team in the tournament is checked');
+          T.assertEqual(report.teams_changed, 2, 'two of the three had drifted');
+
+          const after = {};
+          Repo.readAll(SHEETS.TEAMS).forEach(r => {
+            if (r.tournament_id === t.tid) after[r.team_name] = r;
+          });
+          T.assertEqual(after['ZZ Recount One'].purse_used, 350000,
+            '100000 + 250000, with the superseded 900000 ignored');
+          T.assertEqual(after['ZZ Recount One'].players_count, 2, 'and two slots filled');
+          T.assertEqual(after['ZZ Recount Two'].purse_used, 50000, 'the second team\'s sale');
+          T.assertEqual(after['ZZ Recount Two'].players_count, 1, 'and its one slot');
+          T.assertEqual(after['ZZ Recount Three'].purse_used, 0,
+            'a team with no sales rebuilds to zero, not to whatever it happened to say');
+
+          const changed = {};
+          report.changes.forEach(c => { changed[c.team_name] = c; });
+          T.assertEqual(changed['ZZ Recount One'].purse_used, { from: 999999, to: 350000 },
+            'the report says what moved, so the admin can see the damage');
+          T.assertEqual(changed['ZZ Recount One'].players_count, { from: 9, to: 2 },
+            'for both counters');
+          T.assert(!changed['ZZ Recount Three'],
+            'a team that was already right must not be listed as changed');
+
+          // Audited per team, because a counter moving is a change to that team's
+          // row and has to be answerable by entity_id later (DESIGN.md §42).
+          T.assertEqual(
+            Suites._auditRows(one.team_id, Audit.ACTIONS.TEAM_UPDATED).length, 1,
+            'the first team gets its own TEAM_UPDATED row');
+          T.assertEqual(
+            Suites._auditRows(untouched.team_id, Audit.ACTIONS.TEAM_UPDATED).length, 0,
+            'and the unchanged team gets none — nothing happened to it');
+
+          // Idempotent. Running it twice must not keep "fixing" things.
+          const again = Suites._call('team.recount', { tournamentId: t.tid }, admin);
+          T.assertEqual(again.teams_changed, 0, 'a second recount changes nothing');
+          T.assertEqual(again.sold_rows_counted, 3, 'and counts the same rows');
+        });
+
+      // -----------------------------------------------------------------------
+      // Who may change what — CONTRACTS-PHASE3 §2, DESIGN.md §6.4
+      // -----------------------------------------------------------------------
+
+      T.test('ORGANISER may write until the first sale; ADMIN may write at any time',
+        function () {
+          const t = Suites._seedTournament('tmperm', { withFolders: false });
+          const organiser = Suites._organiserSession('tmorg', t.tid);
+
+          // Before any sale: the organiser owns this job.
+          const built = Suites._call('team.createBatch',
+            { tournamentId: t.tid, names: ['ZZ Perm One', 'ZZ Perm Two'],
+              purseTotal: 500000, maxPlayers: 13 }, organiser);
+          T.assertEqual(built.created.length, 2,
+            'an organiser must be able to build the teams — that is the whole point of ' +
+            'the batch form (CONTRACTS-PHASE3 §2)');
+          const team = built.created[0];
+
+          const edited = Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 600000 }, organiser);
+          T.assertEqual(edited.purse_total, 600000, 'and adjust one afterwards');
+
+          // The first SOLD result is the cut-off, not the auction going live:
+          // before anything is sold there is no existing data a change could
+          // contradict. Seeded directly — Phase 4 is what normally writes it.
+          Suites._seedResult(t.tid, {
+            team_id: team.team_id, serial_no: 1, amount: 100000,
+            status: ENUM.RESULT_STATUS.SOLD, is_current: true
+          });
+          T.assertEqual(Teams.hasAnySale(t.tid), true, 'fixture check: a sale now stands');
+
+          const e = T.assertThrows(() => Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 700000 }, organiser),
+            ERR.FORBIDDEN, 'after the first sale an organiser must be refused');
+          T.assert(String(e.message).toLowerCase().indexOf('admin') !== -1,
+            'and told who can do it instead, got "' + e.message + '"');
+          T.assertThrows(() => Suites._call('team.create',
+            { tournamentId: t.tid, teamName: 'ZZ Perm Three' }, organiser),
+            ERR.FORBIDDEN, 'creating a team is refused too');
+
+          T.assertEqual(
+            Repo.findBy(SHEETS.TEAMS, 'team_id', team.team_id).purse_total, 600000,
+            'and the refused change left the row alone');
+
+          // ADMIN, any time, including mid-auction (DESIGN.md §6.4).
+          const byAdmin = Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 700000 }, admin);
+          T.assertEqual(byAdmin.purse_total, 700000,
+            'an admin may still make the same change — adding a 9th team or raising a ' +
+            'squad size mid-auction is explicitly allowed');
+          const added = Suites._call('team.create',
+            { tournamentId: t.tid, teamName: 'ZZ Perm Nine' }, admin);
+          T.assert(added.team_id, 'and may add a team after the first sale');
+
+          // A superseded sale is not a sale. Retiring the only current SOLD row
+          // puts the organiser back in charge, which is what makes hasAnySale the
+          // right question rather than "does any SOLD row exist".
+          const soldRow = Repo.readAll(SHEETS.AUCTION_RESULTS)
+            .filter(r => r.tournament_id === t.tid && r.is_current === true)[0];
+          T.assert(soldRow, 'fixture check: the current SOLD row is findable');
+          Repo.updateRow(SHEETS.AUCTION_RESULTS, soldRow._row, { is_current: false });
+          Repo.flush();
+          T.assertEqual(Teams.hasAnySale(t.tid), false,
+            'a corrected-away sale is history, not a live fact');
+          const reopened = Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 800000 }, organiser);
+          T.assertEqual(reopened.purse_total, 800000, 'so the organiser may write again');
+
+          // And once the auction is CLOSED, every organiser write stops, even
+          // with no sale on record (DESIGN.md §6.8).
+          Suites._forceStatus(t.tid, ENUM.TOURNAMENT_STATUS.AUCTION_CLOSED);
+          T.assertThrows(() => Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 900000 }, organiser),
+            ERR.AUCTION_CLOSED,
+            'after the auction closes every organiser write is refused — this is the ' +
+            'one case hasAnySale cannot see');
+          const stillAdmin = Suites._call('team.update',
+            { teamId: team.team_id, purseTotal: 900000 }, admin);
+          T.assertEqual(stillAdmin.purse_total, 900000,
+            'while an admin can still fix things after the close');
+        });
+    });
+  },
+
+  // ===========================================================================
+  // Auction — CONTRACTS-PHASE4-7.md §4. Rationale: DESIGN.md §6.5–§6.9, §7, §15,
+  // §28, §29, §43, §44.
+  //
+  // THE MOST IMPORTANT SUITE IN THIS FILE. Everything below runs live, in front
+  // of an audience, with money attached.
+  //
+  // Three things are being defended, and each has tests of its own:
+  //
+  //   1. THE §4.1 ORDER. Nine checks, in one order, each with its own code. The
+  //      order is not cosmetic: TEAM_FULL has to be reported before
+  //      INSUFFICIENT_PURSE, or an organiser whose squad is complete is shown a
+  //      confusing message about money (DESIGN.md §15 case 8).
+  //   2. THE PURSE ARITHMETIC. Every counter on a Teams row is a cache of the
+  //      append-only AuctionResults tab. The sweep at the end of this suite
+  //      re-derives every one of them from that truth and compares.
+  //   3. NOTHING IS EVER DELETED. A correction appends a superseding row and
+  //      flips is_current on the old one (DESIGN.md §2.6, §43).
+  //
+  // WHAT THIS SUITE CANNOT DO: provoke real concurrency. A single Apps Script
+  // execution is single-threaded, so the double-sale test below is SEQUENTIAL —
+  // it proves the re-read and the version check, which are two of the three
+  // defences, but it cannot prove the lock. The real test is 10 parallel
+  // markSold calls at one player through UrlFetchApp.fetchAll against a DEPLOYED
+  // URL. That is KNOWN-ISSUES.md item 8, and it has to be run after deploying
+  // and before the auction.
+  // ===========================================================================
+
+  auction() {
+    T.suite('Auction', function () {
+      const admin = Suites._adminSession('aucadm');
+      const AS = ENUM.AUCTION_STATUS;
+      const RS = ENUM.RESULT_STATUS;
+      const PS = ENUM.PAYMENT_STATUS;
+      const fx = {};
+
+      /** Every tournament this suite creates, for the invariant sweep at the end. */
+      const worlds = [];
+
+      /**
+       * A tournament with teams and an eligible roster, ready to auction.
+       * @param {string} tag short and unique; becomes part of the tournament id
+       * @param {Object=} opts {status, teams: [teamSpec], players: number}
+       * @return {!Object} {tid, row, teams, team (by name), players, bySerial}
+       */
+      function liveWorld(tag, opts) {
+        const o = opts || {};
+        const t = Suites._seedTournament(tag, {
+          withFolders: false,
+          status: o.status || ENUM.TOURNAMENT_STATUS.AUCTION_LIVE
+        });
+        worlds.push(t.tid);
+
+        const teams = Suites._seedTeams(t.tid, o.teams || [
+          { team_name: 'ZZ Alpha', purse_total: 1000000, max_players: 13 },
+          { team_name: 'ZZ Bravo', purse_total: 1000000, max_players: 13 }
+        ]);
+        const byName = {};
+        teams.forEach(x => { byName[x.team_name] = x; });
+
+        const specs = [];
+        const n = (o.players === undefined) ? 6 : o.players;
+        for (let i = 1; i <= n; i++) {
+          specs.push({
+            serial_no: i,
+            name: 'ZZ Auc ' + Suites._seqLetters(),
+            payment_status: PS.VERIFIED
+          });
+        }
+        const roster = Suites._seedRoster(t.tid, specs);
+        return {
+          tid: t.tid, row: t.row, teams: teams, team: byName,
+          players: roster.players, bySerial: roster.bySerial
+        };
+      }
+
+      /** The version a well-behaved client would have just polled. */
+      function ver(tid) {
+        return Cache.getVersion(tid);
+      }
+
+      /** Record a sale through the real action, at the current version. */
+      function sell(tid, playerId, teamId, amount, session) {
+        return Suites._call('auction.markSold', {
+          tournamentId: tid, playerId: playerId, teamId: teamId,
+          amount: amount, expectedVersion: ver(tid)
+        }, session || admin);
+      }
+
+      /** Fresh Teams row from the sheet, never a cached copy. */
+      function team(teamId) {
+        const row = Repo.findBy(SHEETS.TEAMS, 'team_id', teamId);
+        T.assert(row !== null, 'fixture team ' + teamId + ' has no row');
+        return row;
+      }
+
+      /** Fresh Players row from the sheet. */
+      function player(playerId) {
+        const row = Repo.findBy(SHEETS.PLAYERS, 'player_id', playerId);
+        T.assert(row !== null, 'fixture player ' + playerId + ' has no row');
+        return row;
+      }
+
+      /** Every AuctionResults row for one player, in sheet (append) order. */
+      function results(tid, playerId) {
+        return Repo.readAll(SHEETS.AUCTION_RESULTS).filter(r =>
+          r.tournament_id === tid && r.player_id === playerId);
+      }
+
+      /** The one standing result row for a player. */
+      function current(tid, playerId) {
+        const live = results(tid, playerId).filter(r => r.is_current === true);
+        T.assertEqual(live.length, 1,
+          'exactly one AuctionResults row per player may carry is_current = TRUE ' +
+          '(DESIGN.md §2.6); this player has ' + live.length);
+        return live[0];
+      }
+
+      /**
+       * Everything about a tournament that a refused write must not change,
+       * serialised so a failure prints a readable diff.
+       */
+      function frozen(tid) {
+        const rows = tab => Repo.readAll(tab)
+          .filter(r => r.tournament_id === tid)
+          .map(r => JSON.stringify(r));
+        return {
+          v: Cache.getVersion(tid),
+          players: rows(SHEETS.PLAYERS),
+          teams: rows(SHEETS.TEAMS),
+          results: rows(SHEETS.AUCTION_RESULTS)
+        };
+      }
+
+      // ---- fixtures ---------------------------------------------------------
+
+      /** The plain two-team world used by the happy path. */
+      function main() {
+        if (!fx.main) fx.main = liveWorld('aucmain');
+        return fx.main;
+      }
+
+      /** A tournament that is NOT live, for the AUCTION_NOT_LIVE branch. */
+      function notLive() {
+        if (!fx.notLive) {
+          fx.notLive = liveWorld('aucnotl', {
+            status: ENUM.TOURNAMENT_STATUS.REG_OPEN,
+            teams: [{ team_name: 'ZZ Waiting', purse_total: 1000000, max_players: 5 }],
+            players: 1
+          });
+        }
+        return fx.notLive;
+      }
+
+      /**
+       * One world carrying a player in every state §4.1 rejects.
+       *
+       *   #1 eligible and PENDING — the control
+       *   #2 payment still PENDING          -> PLAYER_NOT_ELIGIBLE
+       *   #3 verified but withdrawn         -> PLAYER_NOT_ELIGIBLE
+       *   #4 marked UNSOLD by the fixture   -> PLAYER_NOT_PENDING
+       *   #5 PENDING but holding a team_id  -> ALREADY_ASSIGNED
+       *   #6 sold, to fill "ZZ Full"        -> makes TEAM_FULL reachable
+       *   #7 spare, for the exact-purse boundary
+       *
+       * ZZ Full is given a purse of ₹1,000 AND one slot, and #6 spends all of it.
+       * That is what makes the "TEAM_FULL before INSUFFICIENT_PURSE" test able to
+       * say something: both conditions are true at once.
+       *
+       * Player #5 is deliberately inconsistent — PENDING with a team_id is a state
+       * no action can produce. It is invisible to the invariant sweep by
+       * construction: it has no AuctionResults row and its status is not SOLD.
+       */
+      function guards() {
+        if (fx.guards) return fx.guards;
+        const w = liveWorld('aucgrd', {
+          teams: [
+            { team_name: 'ZZ Full', purse_total: 1000, max_players: 1 },
+            { team_name: 'ZZ Poor', purse_total: 1000, max_players: 5 },
+            { team_name: 'ZZ Rich', purse_total: 1000000, max_players: 5 }
+          ],
+          players: 0
+        });
+        const roster = Suites._seedRoster(w.tid, [
+          { serial_no: 1, name: 'ZZ Guard Good', payment_status: PS.VERIFIED },
+          { serial_no: 2, name: 'ZZ Guard Unpaid', payment_status: PS.PENDING },
+          { serial_no: 3, name: 'ZZ Guard Gone', payment_status: PS.VERIFIED,
+            is_withdrawn: true },
+          { serial_no: 4, name: 'ZZ Guard Called', payment_status: PS.VERIFIED },
+          { serial_no: 5, name: 'ZZ Guard Held', payment_status: PS.VERIFIED,
+            team_id: w.team['ZZ Rich'].team_id },
+          { serial_no: 6, name: 'ZZ Guard Filler', payment_status: PS.VERIFIED },
+          { serial_no: 7, name: 'ZZ Guard Spare', payment_status: PS.VERIFIED }
+        ]);
+
+        // Fill ZZ Full and empty its purse in one real sale.
+        sell(w.tid, roster.bySerial[6].player.player_id, w.team['ZZ Full'].team_id, 1000);
+        // And put #4 beyond PENDING the only way the system allows.
+        Suites._call('auction.markUnsold', {
+          tournamentId: w.tid, playerId: roster.bySerial[4].player.player_id,
+          expectedVersion: ver(w.tid)
+        }, admin);
+
+        fx.guards = { w: w, bySerial: roster.bySerial };
+        return fx.guards;
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('every auction action is registered with the right exposure', function () {
+        ['auction.getBySerial', 'auction.search', 'auction.markSold', 'auction.markUnsold',
+         'auction.returnToPool', 'auction.state', 'auction.summary', 'auction.history']
+          .forEach(name => {
+            const r = Suites._route(name);
+            T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+            T.assert(r.methods.indexOf('GET') === -1, name + ' must not be offered on GET');
+            T.assert(r.auth !== 'PUBLIC', name + ' must never be PUBLIC');
+            T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER) &&
+              Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+              name + ' must allow both ORGANISER and ADMIN — the organiser is the one ' +
+              'running the auction. Got auth = ' + T._fmt(r.auth));
+          });
+
+        ['auction.close', 'auction.reopen'].forEach(name => {
+          const r = Suites._route(name);
+          T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+            name + ' must allow ADMIN');
+          T.assert(!Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER),
+            name + ' is ADMIN only (DESIGN.md §6.8) — closing stops every organiser ' +
+            'write and only an admin may reopen. Got auth = ' + T._fmt(r.auth));
+        });
+
+        const correct = Suites._route('auction.correct');
+        T.assert(Suites._authAllows(correct.auth, ENUM.USER_ROLE.ADMIN),
+          'auction.correct must allow ADMIN');
+        T.assert(Suites._authAllows(correct.auth, ENUM.USER_ROLE.ORGANISER),
+          'auction.correct must let an ORGANISER through the route so the handler can ' +
+          'apply the §4.2 rule properly — a flat ADMIN-only here would block fixing a ' +
+          'typo thirty seconds after making it');
+
+        const display = Suites._route('auction.displayState');
+        T.assertEqual(display.auth, 'PUBLIC',
+          'the projector runs unattended on a venue laptop with nobody signed in; its ' +
+          'credential is the tournament display token (DESIGN.md §5.5)');
+        T.assert(display.methods.indexOf('GET') !== -1, 'displayState must accept GET');
+        T.assert(display.methods.indexOf('POST') !== -1, 'and POST');
+
+        // No write action may ever become public.
+        const routes = buildRoutes();
+        Object.keys(routes).forEach(name => {
+          if (name.indexOf('auction.') !== 0) return;
+          if (name === 'auction.displayState') return;
+          T.assert(routes[name].auth !== 'PUBLIC',
+            'auction action "' + name + '" is PUBLIC. displayState is the only one that ' +
+            'may be, and tools/check.js pins that list deliberately.');
+        });
+      });
+
+      // -----------------------------------------------------------------------
+      // The happy path
+      // -----------------------------------------------------------------------
+
+      T.test('a sale leaves player, team and AuctionResults mutually consistent',
+        function () {
+          const w = main();
+          const p = w.bySerial[1].player;
+          const alpha = w.team['ZZ Alpha'];
+          const before = ver(w.tid);
+
+          const out = Suites._call('auction.markSold', {
+            tournamentId: w.tid, playerId: p.player_id, teamId: alpha.team_id,
+            amount: 125000, expectedVersion: before, note: 'ZZ first sale'
+          }, admin);
+
+          // ---- the response
+          T.assertEqual(out.player.auction_status, AS.SOLD, 'the card comes back SOLD');
+          T.assertEqual(out.player.sold_amount, 125000, 'at the price that was typed');
+          T.assertEqual(out.player.team_name, 'ZZ Alpha', 'naming the buyer');
+          T.assertEqual(out.team.purse_used, 125000, 'the team summary carries the new spend');
+          T.assertEqual(out.team.players_count, 1, 'and the new count');
+          T.assertEqual(out.team.purse_remaining, 875000, '1000000 - 125000');
+          T.assertEqual(out.result.status, RS.SOLD, 'and the result row that was written');
+          T.assertEqual(out.warnings, [],
+            '§4.7: the first sale triggers nothing, because there is no history to ' +
+            'compare against yet. That is correct, not a gap.');
+          T.assertEqual(out.v, before + 1,
+            'step 15 bumps the version exactly once so the projector refetches');
+
+          // ---- the Players row
+          const row = player(p.player_id);
+          T.assertEqual(row.auction_status, AS.SOLD, 'the Players row says SOLD');
+          T.assertEqual(row.team_id, alpha.team_id, 'and carries the buying team');
+          T.assertEqual(row.sold_amount, 125000, 'and the amount');
+          T.assert(!isNaN(Date.parse(row.sold_at)),
+            'sold_at must be a parseable UTC instant, got ' + T._fmt(row.sold_at));
+
+          // ---- the Teams row
+          const t = team(alpha.team_id);
+          T.assertEqual(t.purse_used, 125000,
+            'the counter is maintained inside the sale lock, never recomputed by ' +
+            'scanning Players (CONTRACTS-PHASE3 §3)');
+          T.assertEqual(t.players_count, 1, 'and so is the slot count');
+
+          // ---- the AuctionResults row, which is the truth the other two mirror
+          const all = results(w.tid, p.player_id);
+          T.assertEqual(all.length, 1, 'one sale, one result row');
+          const res = all[0];
+          T.assertEqual(res.is_current, true, 'and it is the standing answer');
+          T.assertEqual(res.status, RS.SOLD, 'recorded as SOLD');
+          T.assertEqual(res.team_id, alpha.team_id, 'against the right team');
+          T.assertEqual(res.amount, 125000, 'for the right money');
+          T.assertEqual(res.serial_no, 1,
+            'with the serial denormalised onto it, so a report never has to join back');
+          T.assertEqual(res.recorded_by, admin.user_id, 'and who recorded it');
+          T.assertEqual(res.supersedes_auction_id, '', 'a first sale supersedes nothing');
+          T.assertEqual(res.auction_id, out.result.auction_id,
+            'the id in the response is the id on the sheet');
+
+          // ---- the three agree with each other
+          T.assertEqual(row.sold_amount, res.amount, 'player and result agree on the money');
+          T.assertEqual(row.team_id, res.team_id, 'and on the buyer');
+          T.assertEqual(t.purse_used, res.amount, 'and the team counter is that one sale');
+
+          // ---- audited with prev and next
+          const audit = Suites._auditRows(p.player_id, Audit.ACTIONS.PLAYER_SOLD);
+          T.assertEqual(audit.length, 1, 'exactly one PLAYER_SOLD row');
+          const prev = Util.safeJsonParse(audit[0].prev_value, null);
+          const next = Util.safeJsonParse(audit[0].new_value, null);
+          T.assert(prev !== null && next !== null,
+            'prev and new must both be stored as JSON (CONTRACTS.md §10)');
+          T.assertEqual(prev.auction_status, AS.PENDING, 'the previous state');
+          T.assertEqual(prev.team_purse_used, 0, 'and the previous purse');
+          T.assertEqual(next.sold_amount, 125000, 'the new amount');
+          T.assertEqual(next.team_purse_used, 125000, 'and the new purse');
+        });
+
+      T.test('an advisory warning is returned but never blocks the sale', function () {
+        // §4.7 and DESIGN.md §6.5a. Prices here are genuinely unpredictable, so a
+        // hard limit would eventually refuse a legitimate bid in front of an
+        // audience. Every one of these is a tick-box, not a wall.
+        const w = liveWorld('aucwarn', {
+          teams: [{ team_name: 'ZZ Cautious', purse_total: 100000, max_players: 5 }],
+          players: 2
+        });
+        const t = w.team['ZZ Cautious'];
+
+        // 30000 is 30% of the team's total purse, over the 25% threshold.
+        const out = sell(w.tid, w.bySerial[1].player.player_id, t.team_id, 30000);
+        T.assertEqual(out.player.auction_status, AS.SOLD,
+          'the sale must go through. A genuinely huge bid for a genuinely great ' +
+          'player always has to be recordable.');
+        T.assert(Array.isArray(out.warnings), 'warnings must be an array');
+        const codes = out.warnings.map(x => x.code);
+        T.assert(codes.indexOf(AUCTION_WARN.LARGE_SHARE_OF_PURSE) !== -1,
+          '30% of the total purse must raise LARGE_SHARE_OF_PURSE, got ' + T._fmt(codes));
+        out.warnings.forEach(x => {
+          T.assert(typeof x.message === 'string' && x.message.length > 0,
+            'every warning needs a sentence the organiser can read, got ' + T._fmt(x));
+        });
+        T.assertEqual(team(t.team_id).purse_used, 30000,
+          'and the money really moved');
+      });
+
+      // -----------------------------------------------------------------------
+      // The §4.1 validations
+      // -----------------------------------------------------------------------
+
+      T.test('markSold runs every §4.1 check, each with its own error code', function () {
+        const g = guards();
+        const w = g.w;
+        const good = g.bySerial[1].player;
+        const rich = w.team['ZZ Rich'].team_id;
+        const attempt = (payload, extra) => {
+          const body = {
+            tournamentId: w.tid, playerId: good.player_id, teamId: rich,
+            amount: 5000, expectedVersion: ver(w.tid)
+          };
+          Object.keys(payload || {}).forEach(k => { body[k] = payload[k]; });
+          return () => Suites._call('auction.markSold', body, admin);
+        };
+
+        // Step 1 — the version check, the third defence against a stale tab.
+        T.assertThrows(attempt({ expectedVersion: undefined }), ERR.VALIDATION_FAILED,
+          'expectedVersion is required: without it the stale-tab defence is opt-out');
+        T.assertThrows(attempt({ expectedVersion: ver(w.tid) + 1 }), ERR.STALE_STATE,
+          'a version the auction has not reached yet');
+        T.assertThrows(attempt({ expectedVersion: ver(w.tid) - 1 }), ERR.STALE_STATE,
+          'a version the auction has already left behind');
+
+        // Step 3 — the auction has to be live.
+        const idle = notLive();
+        T.assertThrows(() => Suites._call('auction.markSold', {
+          tournamentId: idle.tid, playerId: idle.bySerial[1].player.player_id,
+          teamId: idle.team['ZZ Waiting'].team_id, amount: 5000,
+          expectedVersion: ver(idle.tid)
+        }, admin), ERR.AUCTION_NOT_LIVE,
+          'a tournament still taking registrations cannot record a sale');
+
+        // Step 2's re-read only finds what exists.
+        T.assertThrows(attempt({ playerId: 'PLY_zzzzzzzzzzzz' }), ERR.NOT_FOUND,
+          'a player id that is not in this tournament');
+        T.assertThrows(attempt({ playerId: '' }), ERR.VALIDATION_FAILED,
+          'a blank player id');
+        T.assertThrows(attempt({ teamId: 'TEM_zzzzzzzzzzzz' }), ERR.NOT_FOUND,
+          'a team id that is not in this tournament');
+
+        // Step 4 — eligibility, via the single Players.isAuctionEligible rule.
+        const unpaidErr = T.assertThrows(
+          attempt({ playerId: g.bySerial[2].player.player_id }), ERR.PLAYER_NOT_ELIGIBLE,
+          'a player whose payment is still PENDING');
+        T.assert(String(unpaidErr.message).indexOf('PENDING') !== -1,
+          'the message must show the payment status so the organiser can act on it ' +
+          '(DESIGN.md §15 case 19), got "' + unpaidErr.message + '"');
+        const goneErr = T.assertThrows(
+          attempt({ playerId: g.bySerial[3].player.player_id }), ERR.PLAYER_NOT_ELIGIBLE,
+          'a VERIFIED player who has withdrawn is still not eligible — that is exactly ' +
+          'why step 4 must call Players.isAuctionEligible and not re-implement it');
+        T.assert(String(goneErr.message).toLowerCase().indexOf('withdraw') !== -1,
+          'and say so, got "' + goneErr.message + '"');
+
+        // Step 5 — the second defence against a double sale.
+        T.assertThrows(attempt({ playerId: g.bySerial[4].player.player_id }),
+          ERR.PLAYER_NOT_PENDING, 'a player already marked UNSOLD');
+
+        // Step 6 — belt and braces: PENDING while holding a team_id is a fault.
+        T.assertThrows(attempt({ playerId: g.bySerial[5].player.player_id }),
+          ERR.ALREADY_ASSIGNED, 'a PENDING player who already carries a team_id');
+
+        // Step 7 — positive whole rupees, and nothing more (DESIGN.md §6.5a).
+        [0, -1, '12.5', '', '₹5000', '5,000', 'abc'].forEach(bad => {
+          T.assertThrows(attempt({ amount: bad }), ERR.INVALID_AMOUNT,
+            'an amount of ' + T._fmt(bad) + ' is not a positive whole number of rupees');
+        });
+
+        // Step 8 — the squad.
+        const fullErr = T.assertThrows(
+          attempt({ teamId: w.team['ZZ Full'].team_id, amount: 100 }), ERR.TEAM_FULL,
+          'a team that already has all its players');
+        T.assert(String(fullErr.message).indexOf('ZZ Full') !== -1,
+          'the message must name the team, got "' + fullErr.message + '"');
+
+        // Step 9 — then the money.
+        const poor = w.team['ZZ Poor'].team_id;
+        const shortErr = T.assertThrows(
+          attempt({ teamId: poor, amount: 5000 }), ERR.INSUFFICIENT_PURSE,
+          'a bid of 5000 against a remaining purse of 1000');
+        T.assert(String(shortErr.message).indexOf(Util.formatINR(1000)) !== -1,
+          'the message has to carry the real number (CONTRACTS.md §2), got "' +
+          shortErr.message + '"');
+
+        // Nothing above may have moved anything.
+        T.assertEqual(player(good.player_id).auction_status, AS.PENDING,
+          'the control player must still be PENDING after all those refusals');
+        T.assertEqual(team(poor).purse_used, 0, 'and the poor team must have spent nothing');
+
+        // The boundary: exactly the remaining purse is ALLOWED (<=, never <;
+        // DESIGN.md §15 case 6).
+        const exact = sell(w.tid, g.bySerial[7].player.player_id, poor, 1000);
+        T.assertEqual(exact.team.purse_remaining, 0,
+          'a bid equal to the remaining purse must go through and leave zero');
+        T.assertEqual(exact.player.auction_status, AS.SOLD, 'and the player is sold');
+      });
+
+      T.test('TEAM_FULL is reported before INSUFFICIENT_PURSE when both apply', function () {
+        // DESIGN.md §15 case 8 and §4.1 step order. ZZ Full has ONE slot and a
+        // purse of ₹1,000, and the fixture already spent all of it on one player,
+        // so a further bid of ₹5,000 breaks both rules at once. The organiser has
+        // to be told the accurate thing — there is no slot — rather than a
+        // confusing message about money they could in principle add.
+        const g = guards();
+        const full = g.w.team['ZZ Full'];
+
+        const row = team(full.team_id);
+        T.assertEqual(row.players_count, row.max_players,
+          'fixture check: the team is full (' + row.players_count + '/' + row.max_players + ')');
+        T.assertEqual(row.purse_total - row.purse_used, 0,
+          'fixture check: and its purse is exhausted too');
+
+        const e = T.assertThrows(() => Suites._call('auction.markSold', {
+          tournamentId: g.w.tid, playerId: g.bySerial[1].player.player_id,
+          teamId: full.team_id, amount: 5000, expectedVersion: ver(g.w.tid)
+        }, admin), ERR.TEAM_FULL,
+          'both TEAM_FULL and INSUFFICIENT_PURSE are true; §4.1 puts the squad check ' +
+          'first, so TEAM_FULL is the answer');
+        T.assert(String(e.message).toLowerCase().indexOf('purse') === -1,
+          'and the message must not talk about money at all, got "' + e.message + '"');
+      });
+
+      // -----------------------------------------------------------------------
+      // Double sale — SEQUENTIAL. See the suite header and KNOWN-ISSUES item 8.
+      // -----------------------------------------------------------------------
+
+      T.test('markSold twice for one player: exactly one sale, counters moved once',
+        function () {
+          // ================== WHAT THIS TEST CAN AND CANNOT PROVE ==============
+          // Apps Script runs one execution single-threaded, so these two calls are
+          // SEQUENTIAL and the script lock is never actually contended. What is
+          // proven here is defences 2 and 3 of §4.1: the re-read inside the lock
+          // (the second caller sees SOLD) and the version check (a tab that has
+          // not polled since the first sale is refused).
+          //
+          // Defence 1, the lock itself, cannot be provoked from here. The real
+          // test is 10 parallel markSold calls at one player through
+          // UrlFetchApp.fetchAll against a DEPLOYED /exec URL — KNOWN-ISSUES.md
+          // item 8, to be run after deploying and before the auction.
+          // ====================================================================
+          const w = liveWorld('aucdbl', {
+            teams: [{ team_name: 'ZZ Once', purse_total: 1000000, max_players: 13 }],
+            players: 2
+          });
+          const only = w.team['ZZ Once'];
+
+          // --- the two tabs both polled at the same version -------------------
+          const shared = ver(w.tid);
+          const a = w.bySerial[1].player;
+          const first = Suites._call('auction.markSold', {
+            tournamentId: w.tid, playerId: a.player_id, teamId: only.team_id,
+            amount: 200000, expectedVersion: shared
+          }, admin);
+          T.assertEqual(first.player.auction_status, AS.SOLD, 'the first call wins');
+
+          T.assertThrows(() => Suites._call('auction.markSold', {
+            tournamentId: w.tid, playerId: a.player_id, teamId: only.team_id,
+            amount: 200000, expectedVersion: shared
+          }, admin), ERR.STALE_STATE,
+            'the second tab is still holding the version it polled before the first ' +
+            'sale, so the version check refuses it before anything else is looked at');
+
+          // --- and again with a client that DID refresh in between -------------
+          const b = w.bySerial[2].player;
+          Suites._call('auction.markSold', {
+            tournamentId: w.tid, playerId: b.player_id, teamId: only.team_id,
+            amount: 300000, expectedVersion: ver(w.tid)
+          }, admin);
+          T.assertThrows(() => Suites._call('auction.markSold', {
+            tournamentId: w.tid, playerId: b.player_id, teamId: only.team_id,
+            amount: 300000, expectedVersion: ver(w.tid)
+          }, admin), ERR.PLAYER_NOT_PENDING,
+            'with a fresh version the version check passes, and the RE-READ is what ' +
+            'catches it: the row on the sheet already says SOLD');
+
+          // --- the arithmetic moved exactly once per player --------------------
+          const t = team(only.team_id);
+          T.assertEqual(t.purse_used, 500000,
+            '200000 + 300000 and not a rupee more. A double sale would show 700000 or ' +
+            '800000 here.');
+          T.assertEqual(t.players_count, 2, 'two slots filled, not three or four');
+
+          [a, b].forEach(p => {
+            const rows = results(w.tid, p.player_id);
+            T.assertEqual(rows.length, 1,
+              'one sale must leave one AuctionResults row, got ' + rows.length);
+            T.assertEqual(rows.filter(r => r.is_current === true).length, 1,
+              'and exactly one of them is_current');
+          });
+
+          T.assertEqual(Suites._auditRows(a.player_id, Audit.ACTIONS.PLAYER_SOLD).length, 1,
+            'and one PLAYER_SOLD audit row, not two');
+        });
+
+      T.test('a stale expectedVersion gives STALE_STATE and changes absolutely nothing',
+        function () {
+          const w = liveWorld('aucstal', {
+            teams: [{ team_name: 'ZZ Stale', purse_total: 1000000, max_players: 13 }],
+            players: 2
+          });
+          const t = w.team['ZZ Stale'];
+          // Move the version at least once, so "stale" means a real earlier value
+          // rather than the initial 0.
+          sell(w.tid, w.bySerial[1].player.player_id, t.team_id, 111000);
+
+          const before = frozen(w.tid);
+          T.assert(before.v > 0, 'fixture check: the version has moved, got ' + before.v);
+
+          const e = T.assertThrows(() => Suites._call('auction.markSold', {
+            tournamentId: w.tid, playerId: w.bySerial[2].player.player_id,
+            teamId: t.team_id, amount: 222000, expectedVersion: before.v - 1
+          }, admin), ERR.STALE_STATE, 'a version one behind the live one');
+          T.assert(String(e.message).indexOf(String(before.v)) !== -1,
+            'the message must tell the client which version it needs to refresh to, ' +
+            'got "' + e.message + '"');
+
+          T.assertEqual(frozen(w.tid), before,
+            'a STALE_STATE refusal must leave Players, Teams, AuctionResults and the ' +
+            'version itself byte-for-byte as they were. The check runs first, before ' +
+            'anything is even read for writing.');
+        });
+
+      // -----------------------------------------------------------------------
+      // Purse arithmetic
+      // -----------------------------------------------------------------------
+
+      T.test('purse arithmetic is exact across 15 sequential sales', function () {
+        const w = liveWorld('aucbulk', {
+          teams: [{ team_name: 'ZZ Bulk', purse_total: 5000000, max_players: 20 }],
+          players: 15
+        });
+        const t = w.team['ZZ Bulk'];
+        let expected = 0;
+        const amounts = [];
+
+        for (let i = 1; i <= 15; i++) {
+          // Deliberately uneven, so a rounding or truncation bug cannot hide
+          // behind tidy round numbers.
+          const amount = 1000 * (3 + i * 7) + i;
+          amounts.push(amount);
+          expected += amount;
+
+          const out = sell(w.tid, w.bySerial[i].player.player_id, t.team_id, amount);
+          T.assertEqual(out.team.purse_used, expected,
+            'after sale ' + i + ' the running total must be ' + expected);
+          T.assertEqual(out.team.players_count, i, 'and the slot count must be ' + i);
+          T.assertEqual(out.team.purse_remaining, 5000000 - expected,
+            'and remaining must be total minus spent, with no drift');
+        }
+
+        const row = team(t.team_id);
+        T.assertEqual(row.purse_used, expected, 'the stored counter matches the sum');
+        T.assertEqual(row.players_count, 15, 'and so does the count');
+
+        // ==================== THE CROSS-CHECK THAT MATTERS ===================
+        // The Teams counters are a cache. AuctionResults is the truth. Fifteen
+        // additions to a cached number is exactly where a drift of one rupee
+        // would first appear, and nothing on any screen would show it.
+        // =====================================================================
+        const sold = Repo.readAll(SHEETS.AUCTION_RESULTS).filter(r =>
+          r.tournament_id === w.tid && r.is_current === true && r.status === RS.SOLD);
+        T.assertEqual(sold.length, 15, 'fifteen current SOLD rows');
+        const truth = sold.reduce((sum, r) => sum + Util.toInt(r.amount, 0), 0);
+        T.assertEqual(row.purse_used, truth,
+          'purse_used must equal the sum of the current SOLD rows in AuctionResults ' +
+          '(DESIGN.md §2.6). It says ' + row.purse_used + ' and the truth is ' + truth + '.');
+        T.assertEqual(sold.map(r => Util.toInt(r.amount, 0)).sort((x, y) => x - y),
+          amounts.slice().sort((x, y) => x - y),
+          'and every individual amount was recorded exactly as typed');
+
+        // The summary reports the same money, also derived from AuctionResults.
+        const summary = Suites._call('auction.summary', { tournamentId: w.tid }, admin);
+        T.assertEqual(summary.total_spent, expected,
+          'auction.summary totals from AuctionResults, not from the Teams cache');
+        T.assertEqual(summary.sold, 15, 'and counts fifteen sold players');
+        T.assertEqual(summary.total_spent_display, Util.formatINR(expected),
+          'with the ₹-formatted form of the same integer');
+      });
+
+      // -----------------------------------------------------------------------
+      // Correction — §4.3, DESIGN.md §6.7, §43. A correction NEVER deletes.
+      // -----------------------------------------------------------------------
+
+      T.test('correcting A to B refunds A, charges B, and supersedes the old row',
+        function () {
+          const w = liveWorld('auccorr', {
+            teams: [
+              { team_name: 'ZZ From', purse_total: 1000000, max_players: 13 },
+              { team_name: 'ZZ To', purse_total: 1000000, max_players: 13 }
+            ],
+            players: 2
+          });
+          const from = w.team['ZZ From'];
+          const to = w.team['ZZ To'];
+          const p = w.bySerial[1].player;
+
+          sell(w.tid, p.player_id, from.team_id, 200000);
+          const oldRow = current(w.tid, p.player_id);
+          T.assertEqual(team(from.team_id).purse_used, 200000, 'fixture check: A was charged');
+
+          const out = Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: p.player_id, newStatus: AS.SOLD,
+            teamId: to.team_id, amount: 150000, expectedVersion: ver(w.tid),
+            note: 'ZZ wrong team called out'
+          }, admin);
+
+          // ---- A is put back exactly as it was
+          const a = team(from.team_id);
+          T.assertEqual(a.purse_used, 0, 'the old team is refunded in full');
+          T.assertEqual(a.players_count, 0, 'and its slot is freed');
+
+          // ---- B is charged the new amount, not the old one
+          const b = team(to.team_id);
+          T.assertEqual(b.purse_used, 150000, 'the new team is charged the corrected price');
+          T.assertEqual(b.players_count, 1, 'and fills one slot');
+
+          // ---- history: the old row survives, flagged, and is pointed at
+          const rows = results(w.tid, p.player_id);
+          T.assertEqual(rows.length, 2,
+            'a correction APPENDS. Two rows, not one edited one — the old row is the ' +
+            'evidence that settles an argument afterwards (DESIGN.md §43).');
+          const retired = rows.filter(r => r.auction_id === oldRow.auction_id)[0];
+          T.assertEqual(retired.is_current, false, 'the old row is no longer current');
+          T.assertEqual(retired.amount, 200000,
+            'and NOTHING in it is rewritten — it still records what was announced at ' +
+            'the time');
+          T.assertEqual(retired.team_id, from.team_id, 'including which team it was');
+
+          const fresh = current(w.tid, p.player_id);
+          T.assertEqual(fresh.supersedes_auction_id, oldRow.auction_id,
+            'the new row points back at the one it replaced');
+          T.assertEqual(fresh.status, RS.SOLD, 'it is still a sale');
+          T.assertEqual(fresh.team_id, to.team_id, 'to the new team');
+          T.assertEqual(fresh.amount, 150000, 'for the new amount');
+          T.assertEqual(fresh.auction_id, out.result.auction_id, 'and the response says so');
+
+          // ---- the Players row follows the standing result
+          const row = player(p.player_id);
+          T.assertEqual(row.team_id, to.team_id, 'the player now belongs to B');
+          T.assertEqual(row.sold_amount, 150000, 'at the corrected price');
+          T.assertEqual(row.auction_status, AS.SOLD, 'and is still SOLD');
+
+          // ---- audited with both values
+          const audit = Suites._auditRows(p.player_id, Audit.ACTIONS.AUCTION_CORRECTED);
+          T.assertEqual(audit.length, 1, 'exactly one AUCTION_CORRECTED row');
+          const prev = Util.safeJsonParse(audit[0].prev_value, null);
+          const next = Util.safeJsonParse(audit[0].new_value, null);
+          T.assert(prev !== null && next !== null, 'with both values as JSON');
+          T.assertEqual(prev.team_id, from.team_id, 'the team it was');
+          T.assertEqual(prev.sold_amount, 200000, 'and the money it was');
+          T.assertEqual(next.team_id, to.team_id, 'the team it is');
+          T.assertEqual(next.sold_amount, 150000, 'and the money it is');
+
+          // Correcting only the amount, on the same team, must not read as a
+          // second player at a second full price.
+          Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: p.player_id, newStatus: AS.SOLD,
+            teamId: to.team_id, amount: 175000, expectedVersion: ver(w.tid)
+          }, admin);
+          const again = team(to.team_id);
+          T.assertEqual(again.purse_used, 175000,
+            'a same-team amount change is one net write, not a reversal and a fresh ' +
+            'sale that happen to cancel out');
+          T.assertEqual(again.players_count, 1, 'and the slot count must not double');
+        });
+
+      T.test('a correction that would overspend or overfill is refused, and nothing moves',
+        function () {
+          // §4.3 rule 5: re-validate everything from §4.1 against the NEW team and
+          // amount. A correction is typed under pressure, right after a mistake,
+          // so it is more likely to overspend than a fresh sale, not less.
+          const w = liveWorld('auccbad', {
+            teams: [
+              { team_name: 'ZZ Holder', purse_total: 1000000, max_players: 13 },
+              { team_name: 'ZZ Tiny', purse_total: 1000, max_players: 5 },
+              { team_name: 'ZZ OneSlot', purse_total: 1000000, max_players: 1 }
+            ],
+            players: 3
+          });
+          const holder = w.team['ZZ Holder'];
+          const tiny = w.team['ZZ Tiny'];
+          const oneSlot = w.team['ZZ OneSlot'];
+
+          sell(w.tid, w.bySerial[1].player.player_id, holder.team_id, 200000);
+          sell(w.tid, w.bySerial[2].player.player_id, oneSlot.team_id, 50000);
+          const p = w.bySerial[1].player;
+          const before = frozen(w.tid);
+
+          T.assertThrows(() => Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: p.player_id, newStatus: AS.SOLD,
+            teamId: tiny.team_id, amount: 200000, expectedVersion: ver(w.tid)
+          }, admin), ERR.INSUFFICIENT_PURSE,
+            'moving a ₹2,00,000 player onto a team with ₹1,000 must be refused');
+
+          T.assertThrows(() => Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: p.player_id, newStatus: AS.SOLD,
+            teamId: oneSlot.team_id, amount: 100000, expectedVersion: ver(w.tid)
+          }, admin), ERR.TEAM_FULL,
+            'moving a player onto a team whose only slot is taken must be refused');
+
+          T.assertThrows(() => Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: p.player_id, newStatus: AS.SOLD,
+            teamId: holder.team_id, amount: 0, expectedVersion: ver(w.tid)
+          }, admin), ERR.INVALID_AMOUNT, 'and a correction to zero rupees is still zero');
+
+          T.assertThrows(() => Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: p.player_id, newStatus: 'BANANA',
+            teamId: holder.team_id, amount: 1000, expectedVersion: ver(w.tid)
+          }, admin), ERR.VALIDATION_FAILED, 'a status that is not one of the three');
+
+          T.assertThrows(() => Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: w.bySerial[3].player.player_id,
+            newStatus: AS.SOLD, teamId: holder.team_id, amount: 1000,
+            expectedVersion: ver(w.tid)
+          }, admin), ERR.NOT_FOUND,
+            'there is nothing to correct for a player who was never called');
+
+          T.assertEqual(frozen(w.tid), before,
+            'NOT ONE of those refusals may have reversed the original sale on the way ' +
+            'in. The reversal is computed first but only written after every check has ' +
+            'passed, and this is the assertion that keeps it that way.');
+        });
+
+      T.test('correcting back to PENDING clears team_id, sold_amount and sold_at',
+        function () {
+          const w = liveWorld('auccpen', {
+            teams: [{ team_name: 'ZZ Undo', purse_total: 1000000, max_players: 13 }],
+            players: 1
+          });
+          const t = w.team['ZZ Undo'];
+          const p = w.bySerial[1].player;
+
+          sell(w.tid, p.player_id, t.team_id, 175000);
+          const soldRow = player(p.player_id);
+          T.assertEqual(soldRow.team_id, t.team_id, 'fixture check: the sale landed');
+          T.assert(!Util.isBlank(soldRow.sold_at), 'fixture check: with a timestamp');
+          const oldResult = current(w.tid, p.player_id);
+
+          Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: p.player_id, newStatus: AS.PENDING,
+            expectedVersion: ver(w.tid), note: 'ZZ the sale never happened'
+          }, admin);
+
+          const row = player(p.player_id);
+          T.assertEqual(row.auction_status, AS.PENDING, 'the player is back in the pool');
+          T.assertEqual(row.team_id, '',
+            'team_id must be cleared — a PENDING player holding a team is the exact ' +
+            'state §4.1 step 6 rejects as a data fault');
+          T.assertEqual(Util.isBlank(row.sold_amount), true,
+            'sold_amount must be cleared, not left at 175000. Money spent against ' +
+            'nobody is what every report would then show.');
+          T.assertEqual(row.sold_at, '', 'and so must sold_at');
+
+          const t2 = team(t.team_id);
+          T.assertEqual(t2.purse_used, 0, 'the team is refunded');
+          T.assertEqual(t2.players_count, 0, 'and its slot freed');
+
+          const fresh = current(w.tid, p.player_id);
+          T.assertEqual(fresh.status, RS.RETURNED_TO_POOL,
+            'the standing history row records the player going back to the pool');
+          T.assertEqual(fresh.supersedes_auction_id, oldResult.auction_id,
+            'pointing at the sale it undid');
+          T.assertEqual(Util.isBlank(fresh.amount), true,
+            'and carrying no amount, because no money changed hands');
+          T.assertEqual(results(w.tid, p.player_id).length, 2,
+            'the sale itself is still on the sheet — nothing is ever deleted');
+
+          // And the player can be sold again afterwards, which is the whole point.
+          const resold = sell(w.tid, p.player_id, t.team_id, 90000);
+          T.assertEqual(resold.player.auction_status, AS.SOLD, 'a re-sale goes through');
+          T.assertEqual(team(t.team_id).purse_used, 90000,
+            'and charges only the new price');
+        });
+
+      // -----------------------------------------------------------------------
+      // Unsold, back to the pool, then sold — DESIGN.md §6.6
+      // -----------------------------------------------------------------------
+
+      T.test('markUnsold -> returnToPool -> markSold, with the history rows right',
+        function () {
+          // §23 of the requirement says an unsold player "might get sold after
+          // sometime". returnToPool is the only control that makes that possible.
+          const w = liveWorld('aucpool', {
+            teams: [{ team_name: 'ZZ Later', purse_total: 1000000, max_players: 13 }],
+            players: 1
+          });
+          const t = w.team['ZZ Later'];
+          const p = w.bySerial[1].player;
+
+          // Bring them to the table first, so times_called is realistic.
+          Suites._call('auction.getBySerial',
+            { tournamentId: w.tid, serialNo: 1 }, admin);
+          const calledOnce = Util.toInt(player(p.player_id).times_called, 0);
+          T.assertEqual(calledOnce, 1, 'fixture check: called once');
+
+          const unsold = Suites._call('auction.markUnsold', {
+            tournamentId: w.tid, playerId: p.player_id, expectedVersion: ver(w.tid)
+          }, admin);
+          T.assertEqual(unsold.player.auction_status, AS.UNSOLD, 'nobody bid');
+          T.assertEqual(team(t.team_id).purse_used, 0,
+            'an unsold player costs nothing and fills no slot');
+          T.assertEqual(team(t.team_id).players_count, 0, 'neither counter moves');
+
+          // A sold player cannot be returned to the pool this way.
+          const returned = Suites._call('auction.returnToPool', {
+            tournamentId: w.tid, playerId: p.player_id, expectedVersion: ver(w.tid)
+          }, admin);
+          T.assertEqual(returned.player.auction_status, AS.PENDING,
+            'and back in the pool they go');
+          T.assertEqual(Util.toInt(player(p.player_id).times_called, 0), calledOnce,
+            'times_called must NOT be reset. They have been to the table, so they ' +
+            'belong in "awaiting re-auction", not back in "not called" (DESIGN.md §6.9).');
+
+          T.assertThrows(() => Suites._call('auction.returnToPool', {
+            tournamentId: w.tid, playerId: p.player_id, expectedVersion: ver(w.tid)
+          }, admin), ERR.VALIDATION_FAILED,
+            'returning a player who is already in the pool is a no-op the organiser ' +
+            'should be told about, not a second history row');
+
+          const resold = sell(w.tid, p.player_id, t.team_id, 65000);
+          T.assertEqual(resold.player.auction_status, AS.SOLD, 'and they sell second time');
+
+          // ---- the history, newest first (§4.2)
+          const hist = Suites._call('auction.history', { tournamentId: w.tid }, admin);
+          const mine = hist.rows.filter(r => r.player_id === p.player_id);
+          T.assertEqual(mine.map(r => r.status), [RS.SOLD, RS.RETURNED_TO_POOL, RS.UNSOLD],
+            'three events, newest first — every one of them kept');
+          T.assertEqual(mine.map(r => r.is_current), [true, false, false],
+            'and only the last is the standing answer');
+          T.assertEqual(mine[0].amount, 65000, 'the sale carries the money');
+          T.assertEqual(mine[1].amount, null,
+            'a return to the pool carries none — blank and zero are different facts');
+          T.assertEqual(mine[2].amount, null, 'and neither does an unsold call');
+          T.assertEqual(mine[1].supersedes_auction_id, '',
+            'a return to the pool is a NEW event, not a correction of the UNSOLD row. ' +
+            'That row remains a true record of what happened at the time, so §4.3 ' +
+            'reserves supersedes_auction_id for corrections.');
+          T.assertEqual(mine[0].name, player(p.player_id).name,
+            'and the history names the player without a second lookup per row');
+
+          // The trail carries one row per event.
+          T.assertEqual(
+            Suites._auditRows(p.player_id, Audit.ACTIONS.PLAYER_UNSOLD).length, 1,
+            'one PLAYER_UNSOLD row');
+          T.assertEqual(
+            Suites._auditRows(p.player_id, Audit.ACTIONS.PLAYER_RETURNED_TO_POOL).length, 1,
+            'one PLAYER_RETURNED_TO_POOL row');
+          T.assertEqual(
+            Suites._auditRows(p.player_id, Audit.ACTIONS.PLAYER_SOLD).length, 1,
+            'one PLAYER_SOLD row');
+
+          // And a SOLD player is sent through Correct instead, with a message
+          // that says so.
+          const e = T.assertThrows(() => Suites._call('auction.returnToPool', {
+            tournamentId: w.tid, playerId: p.player_id, expectedVersion: ver(w.tid)
+          }, admin), ERR.ALREADY_ASSIGNED,
+            'quietly clearing a SOLD player here would leave the money spent against ' +
+            'nobody');
+          T.assert(String(e.message).toLowerCase().indexOf('correct') !== -1,
+            'and the message must point at the action that does reverse a sale, got "' +
+            e.message + '"');
+        });
+
+      // -----------------------------------------------------------------------
+      // times_called — DESIGN.md §6.9, the number the four labels rest on
+      // -----------------------------------------------------------------------
+
+      T.test('times_called rises on getBySerial and never on search', function () {
+        const w = liveWorld('aucshow', {
+          teams: [{ team_name: 'ZZ Watch', purse_total: 1000000, max_players: 13 }],
+          players: 2
+        });
+        const p = w.bySerial[1].player;
+        T.assertEqual(Util.toInt(player(p.player_id).times_called, 0), 0,
+          'fixture check: nobody has been called yet');
+
+        const first = Suites._call('auction.getBySerial',
+          { tournamentId: w.tid, serialNo: 1 }, admin);
+        T.assertEqual(first.revealed, true, 'an eligible player is revealed');
+        T.assertEqual(first.player.times_called, 1, 'and counted as called once');
+        T.assertEqual(Util.toInt(player(p.player_id).times_called, 0), 1,
+          'on the sheet, not only in the response');
+
+        Suites._call('auction.getBySerial', { tournamentId: w.tid, serialNo: 1 }, admin);
+        T.assertEqual(Util.toInt(player(p.player_id).times_called, 0), 2,
+          'calling them back a second time counts again');
+
+        // ==================== THE DISTINCTION THAT MATTERS ===================
+        // Searching to check a name is not the same as bringing somebody to the
+        // auction table. The whole "not called" number in the reports — roughly
+        // 300 of 400 players — depends on search staying read-only.
+        // =====================================================================
+        const before = Util.toInt(player(p.player_id).times_called, 0);
+        const found = Suites._call('auction.search',
+          { tournamentId: w.tid, q: player(p.player_id).name }, admin);
+        T.assert(found.total >= 1, 'the search must actually find them, got ' +
+          T._fmt(found.total));
+        Suites._call('auction.search', { tournamentId: w.tid, q: '1' }, admin);
+        Suites._call('auction.search', { tournamentId: w.tid, role: ENUM.PLAYER_ROLE.BATSMAN },
+          admin);
+        T.assertEqual(Util.toInt(player(p.player_id).times_called, 0), before,
+          'three searches must leave times_called at ' + before + '. A search that ' +
+          'counted as a call would turn every "not called" player into "awaiting ' +
+          're-auction" and the reports would stop meaning anything.');
+
+        // An ineligible player is looked up but never revealed, and never counted.
+        const blocked = Suites._seedRoster(w.tid, [
+          { serial_no: 9, name: 'ZZ Show Unpaid', payment_status: PS.PENDING }
+        ]);
+        const look = Suites._call('auction.getBySerial',
+          { tournamentId: w.tid, serialNo: 9 }, admin);
+        T.assertEqual(look.revealed, false,
+          'a player whose payment is not verified must not reach the big screen');
+        T.assert(String(look.message).length > 0,
+          'but the organiser is told why, so they can act on it (DESIGN.md §15 case 19)');
+        T.assertEqual(
+          Util.toInt(player(blocked.players[0].player_id).times_called, 0), 0,
+          'and looking them up does not count as calling them');
+
+        // A serial nobody used.
+        const e = T.assertThrows(() => Suites._call('auction.getBySerial',
+          { tournamentId: w.tid, serialNo: 4242 }, admin), ERR.NOT_FOUND,
+          'a serial that is not in this tournament');
+        T.assert(String(e.message).indexOf('4242') !== -1,
+          'the message must repeat the number they typed (DESIGN.md §15 case 18), got "' +
+          e.message + '"');
+      });
+
+      // -----------------------------------------------------------------------
+      // all_teams_full — the advisory that tells the organiser when to stop
+      // -----------------------------------------------------------------------
+
+      T.test('all_teams_full flips true only when the very last slot fills', function () {
+        const w = liveWorld('aucfull', {
+          teams: [
+            { team_name: 'ZZ Solo One', purse_total: 1000000, max_players: 1 },
+            { team_name: 'ZZ Solo Two', purse_total: 1000000, max_players: 1 }
+          ],
+          players: 4
+        });
+        const summary = () => Suites._call('auction.summary', { tournamentId: w.tid }, admin);
+
+        let s = summary();
+        T.assertEqual(s.teams_total, 2, 'two teams');
+        T.assertEqual(s.teams_full, 0, 'neither full yet');
+        T.assertEqual(s.all_teams_full, false, 'so the banner stays off');
+        T.assertEqual(s.banner, '', 'and there is no sentence to show');
+
+        sell(w.tid, w.bySerial[1].player.player_id, w.team['ZZ Solo One'].team_id, 10000);
+        s = summary();
+        T.assertEqual(s.teams_full, 1, 'one team is now full');
+        T.assertEqual(s.all_teams_full, false,
+          'ONE full team is not all of them. Flipping here would tell the organiser to ' +
+          'close the auction with half the squads empty.');
+
+        sell(w.tid, w.bySerial[2].player.player_id, w.team['ZZ Solo Two'].team_id, 20000);
+        s = summary();
+        T.assertEqual(s.teams_full, 2, 'both teams are full');
+        T.assertEqual(s.all_teams_full, true, 'and only now does the advisory turn on');
+        T.assert(s.banner.indexOf('2 teams are full') !== -1,
+          'the banner says how many teams, got "' + s.banner + '"');
+        T.assert(s.banner.indexOf(String(s.not_called)) !== -1,
+          'and how many players were never called — the number that makes it an ' +
+          'explainable ending rather than an abandoned auction (DESIGN.md §6.9)');
+
+        // The four honest labels partition the eligible pool.
+        T.assertEqual(s.sold + s.unsold + s.awaiting_reauction + s.not_called, s.eligible,
+          'sold + unsold + awaiting + not_called must equal the eligible pool, or one ' +
+          'of the four is double-counting');
+        T.assertEqual(s.sold, 2, 'two sold');
+        T.assertEqual(s.not_called, 2, 'and two nobody ever reached');
+
+        // Advisory only — nothing about it stops a further sale being attempted,
+        // and the failure is the ordinary TEAM_FULL, not a special "auction over".
+        T.assertThrows(() => sell(w.tid, w.bySerial[3].player.player_id,
+          w.team['ZZ Solo One'].team_id, 10000), ERR.TEAM_FULL,
+          'the banner is advisory; the real refusal is still the §4.1 squad check');
+      });
+
+      // -----------------------------------------------------------------------
+      // Closing — DESIGN.md §6.8, §15 case 20
+      // -----------------------------------------------------------------------
+
+      T.test('after close every organiser write is refused, reads work, ADMIN can correct',
+        function () {
+          const w = liveWorld('aucshut', {
+            teams: [{ team_name: 'ZZ Shut', purse_total: 1000000, max_players: 13 }],
+            players: 3
+          });
+          const t = w.team['ZZ Shut'];
+          const organiser = Suites._organiserSession('aucorg', w.tid);
+          const sold = w.bySerial[1].player;
+
+          sell(w.tid, sold.player_id, t.team_id, 120000);
+
+          const closed = Suites._call('auction.close',
+            { tournamentId: w.tid, expectedVersion: ver(w.tid), note: 'ZZ done' }, admin);
+          T.assertEqual(closed.status, ENUM.TOURNAMENT_STATUS.AUCTION_CLOSED,
+            'the auction closes');
+          T.assertEqual(closed.alreadyClosed, false, 'first time');
+          T.assertEqual(closed.summary.sold, 1, 'and the closing summary counts the sale');
+          T.assertEqual(closed.summary.total_spent, 120000, 'and the money');
+          T.assertEqual(
+            Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', w.tid).status,
+            ENUM.TOURNAMENT_STATUS.AUCTION_CLOSED, 'the row followed');
+          T.assertEqual(
+            Suites._auditRows(w.tid, Audit.ACTIONS.AUCTION_CLOSED).length, 1,
+            'exactly one AUCTION_CLOSED row');
+
+          // ---- every organiser WRITE is refused, with the code that says why
+          const spare = w.bySerial[2].player;
+          T.assertThrows(() => Suites._call('auction.markSold', {
+            tournamentId: w.tid, playerId: spare.player_id, teamId: t.team_id,
+            amount: 50000, expectedVersion: ver(w.tid)
+          }, organiser), ERR.AUCTION_CLOSED, 'markSold after the close');
+          T.assertThrows(() => Suites._call('auction.markUnsold', {
+            tournamentId: w.tid, playerId: spare.player_id, expectedVersion: ver(w.tid)
+          }, organiser), ERR.AUCTION_CLOSED, 'markUnsold after the close');
+          T.assertThrows(() => Suites._call('auction.returnToPool', {
+            tournamentId: w.tid, playerId: spare.player_id, expectedVersion: ver(w.tid)
+          }, organiser), ERR.AUCTION_CLOSED, 'returnToPool after the close');
+          T.assertThrows(() => Suites._call('auction.getBySerial',
+            { tournamentId: w.tid, serialNo: 2 }, organiser), ERR.AUCTION_CLOSED,
+            'getBySerial too — it writes times_called and puts a face on the projector');
+          T.assertThrows(() => Suites._call('team.create',
+            { tournamentId: w.tid, teamName: 'ZZ Too Late' }, organiser),
+            ERR.AUCTION_CLOSED, 'and a team change is an organiser write as well');
+          T.assertThrows(() => Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: sold.player_id, newStatus: AS.SOLD,
+            teamId: t.team_id, amount: 100000, expectedVersion: ver(w.tid)
+          }, organiser), ERR.AUCTION_CLOSED,
+            '§4.2: an organiser may correct only until the auction is closed');
+
+          T.assertEqual(player(spare.player_id).auction_status, AS.PENDING,
+            'and not one of those refusals changed anything');
+
+          // ---- reads keep working, because the report is written afterwards
+          const summary = Suites._call('auction.summary', { tournamentId: w.tid }, organiser);
+          T.assertEqual(summary.status, ENUM.TOURNAMENT_STATUS.AUCTION_CLOSED,
+            'the summary still reads, and says the auction is closed');
+          T.assertEqual(summary.sold, 1, 'with the numbers intact');
+          T.assert(Suites._call('auction.search', { tournamentId: w.tid }, organiser).total >= 3,
+            'search still reads');
+          T.assert(Suites._call('auction.history', { tournamentId: w.tid }, organiser).total >= 1,
+            'and so does the history');
+          T.assert(typeof Suites._call('auction.state',
+            { tournamentId: w.tid, v: -1 }, organiser).v === 'number',
+            'and the poll');
+          T.assert(Suites._call('team.list', { tournamentId: w.tid }, organiser).teams.length >= 1,
+            'and the team dashboard');
+
+          // ---- ADMIN can still fix a mistake, which is when most are noticed
+          const fixed = Suites._call('auction.correct', {
+            tournamentId: w.tid, playerId: sold.player_id, newStatus: AS.SOLD,
+            teamId: t.team_id, amount: 100000, expectedVersion: ver(w.tid),
+            note: 'ZZ typo found after the close'
+          }, admin);
+          T.assertEqual(fixed.result.status, RS.SOLD, 'the correction goes through');
+          T.assertEqual(team(t.team_id).purse_used, 100000,
+            'and the purse is corrected to the new figure');
+
+          // Closing twice is not an error worth a scary message.
+          const again = Suites._call('auction.close',
+            { tournamentId: w.tid, expectedVersion: ver(w.tid) }, admin);
+          T.assertEqual(again.alreadyClosed, true, 'a second close is a no-op');
+
+          // Only an admin may reopen, and it is audited (DESIGN.md §6.8).
+          const reopened = Suites._call('auction.reopen',
+            { tournamentId: w.tid, expectedVersion: ver(w.tid), reason: 'ZZ one more lot' },
+            admin);
+          T.assertEqual(reopened.status, ENUM.TOURNAMENT_STATUS.AUCTION_LIVE,
+            'an admin can reopen');
+          T.assertEqual(
+            Suites._auditRows(w.tid, Audit.ACTIONS.AUCTION_REOPENED).length, 1,
+            'and reopening is audited — it re-enables every organiser write');
+          const back = sell(w.tid, spare.player_id, t.team_id, 40000, organiser);
+          T.assertEqual(back.player.auction_status, AS.SOLD,
+            'after which the organiser can work again');
+        });
+
+      // -----------------------------------------------------------------------
+      // The projector feed — §4.2, DESIGN.md §8, §16 risk 7
+      // -----------------------------------------------------------------------
+
+      T.test('displayState needs the right token and carries no personal data',
+        function () {
+          const w = liveWorld('aucdisp', {
+            teams: [{ team_name: 'ZZ Screen', purse_total: 1000000, max_players: 13 }],
+            players: 2
+          });
+          const token = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', w.tid).display_token;
+          T.assert(!Util.isBlank(token), 'fixture check: the tournament has a display token');
+          // Auction.gs caches a verified token for five minutes under a key of its
+          // own; cleanup has to be told about it or the next run starts trusting a
+          // token this one issued.
+          T.trackCacheKey(AUCTION_DTOK_PREFIX + w.tid + ':' + Util.sha256Hex(token));
+
+          // Put somebody on the screen so `current` is not null.
+          Suites._call('auction.getBySerial', { tournamentId: w.tid, serialNo: 1 }, admin);
+          const p = player(w.bySerial[1].player.player_id);
+          const pay = Repo.findBy(SHEETS.PAYMENTS, 'player_id', p.player_id);
+          T.assert(pay !== null, 'fixture check: the player has a payment row');
+
+          // ---- the gate
+          [['', 'no token at all'],
+           ['zz-not-the-display-token', 'a token that was never issued'],
+           [token + 'x', 'the right token with one extra character'],
+           [String(token).toUpperCase(), 'the right token in the wrong case']
+          ].forEach(pair => {
+            if (pair[0] === String(token)) return;
+            T.assertThrows(() => Suites._call('auction.displayState',
+              { tournamentId: w.tid, k: pair[0] }, null), ERR.UNAUTHORIZED, pair[1]);
+          });
+
+          // A valid token for the WRONG tournament must not open this one.
+          const otherToken = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', main().tid)
+            .display_token;
+          T.assertThrows(() => Suites._call('auction.displayState',
+            { tournamentId: w.tid, k: otherToken }, null), ERR.UNAUTHORIZED,
+            'another tournament\'s display token');
+
+          // ---- the feed itself
+          const out = Suites._call('auction.displayState',
+            { tournamentId: w.tid, k: token, v: -1 }, null);
+          T.assertEqual(out.same, false, 'a client with no version gets the full snapshot');
+          T.assert(out.current !== null, 'and the player who was called is on it');
+          T.assertEqual(out.current.serial_no, 1, 'the right one');
+          T.assertEqual(out.current.name, p.name, 'by name');
+          T.assert(Array.isArray(out.teams) && out.teams.length === 1,
+            'with the team strip, got ' + T._fmt(out.teams));
+
+          // ==================== THE SECURITY TEST ==============================
+          // This goes to a screen in a public hall. The payload is built field by
+          // field from the snapshot rather than spread, so that a field added to
+          // the snapshot later cannot be published by accident. The assertions
+          // below are made against the SERIALISED response, so a value nested
+          // inside an allowed key fails here too.
+          // =====================================================================
+          const wire = JSON.stringify(out);
+          ['mobile', 'upi_ref', 'payment_status', 'player_id', 'team_id',
+           'is_withdrawn', 'photo_file_id', 'screenshot_file_id', 'dob']
+            .forEach(needle => {
+              T.assert(wire.indexOf(needle) === -1,
+                'the projector feed carries "' + needle + '". A hall full of people can ' +
+                'photograph that screen.');
+            });
+          [['mobile number', p.mobile],
+           ['UPI reference', pay.upi_ref],
+           ['payment status', 'VERIFIED']].forEach(pair => {
+            if (Util.isBlank(pair[1])) return;
+            T.assert(wire.indexOf(String(pair[1])) === -1,
+              'the ' + pair[0] + ' "' + pair[1] + '" appears in the projector feed even ' +
+              'though its key does not');
+          });
+
+          T.assertEqual(Object.keys(out.current).sort(), [
+            'age_years', 'auction_status', 'name', 'photo_thumb_url', 'role', 'serial_no',
+            'sold_amount_display', 'style', 'team_name'
+          ], 'the projector card is exactly what §4.5 says the screen shows');
+          T.assertEqual(Object.keys(out.teams[0]).sort(), [
+            'max_players', 'per_slot_remaining_display', 'players_count',
+            'purse_remaining_display', 'team_name'
+          ], 'and a team strip entry is exactly the five fields it renders');
+
+          // The 2-second poll: unchanged means ~30 bytes and no snapshot at all.
+          const same = Suites._call('auction.displayState',
+            { tournamentId: w.tid, k: token, v: out.v }, null);
+          T.assertEqual(same, { v: out.v, same: true },
+            'an unchanged poll must answer with nothing but the version. Two clients ' +
+            'polling every 2 s for three hours is ~10,800 requests (§4.5).');
+        });
+
+      // -----------------------------------------------------------------------
+      // THE INVARIANT SWEEP — everything this suite did, re-derived from scratch
+      // -----------------------------------------------------------------------
+
+      T.test('INVARIANT SWEEP: every counter, every player row and every is_current flag',
+        function () {
+          // Each test above checks its own arithmetic. This one re-derives ALL of
+          // it from the append-only truth, across every tournament the suite
+          // touched, and is the test that would catch a sale that quietly worked
+          // twice or a correction that reversed a purse it should not have.
+          T.assert(worlds.length >= 8,
+            'the sweep is only meaningful if the suite actually built its worlds; it ' +
+            'found ' + worlds.length);
+
+          const allPlayers = Repo.readAll(SHEETS.PLAYERS);
+          const allTeams = Repo.readAll(SHEETS.TEAMS);
+          const allResults = Repo.readAll(SHEETS.AUCTION_RESULTS);
+
+          worlds.forEach(tid => {
+            const rows = allResults.filter(r => r.tournament_id === tid);
+
+            // --- 1. exactly one is_current row per player that has any history
+            const seen = {};
+            rows.forEach(r => {
+              const id = String(r.player_id);
+              if (!seen[id]) seen[id] = { total: 0, current: 0 };
+              seen[id].total++;
+              if (r.is_current === true) seen[id].current++;
+            });
+            Object.keys(seen).forEach(id => {
+              T.assertEqual(seen[id].current, 1,
+                tid + ' player ' + id + ' has ' + seen[id].current + ' rows flagged ' +
+                'is_current out of ' + seen[id].total + '. Exactly one row per player ' +
+                'may be the standing answer (DESIGN.md §2.6) — any other number and ' +
+                'the reports, the counters and the projector will each pick a ' +
+                'different one.');
+            });
+
+            // --- 2. every team counter equals its AuctionResults truth
+            const truth = {};
+            rows.forEach(r => {
+              if (r.is_current !== true) return;
+              if (String(r.status) !== RS.SOLD) return;
+              const id = String(r.team_id);
+              if (!truth[id]) truth[id] = { spent: 0, players: 0 };
+              truth[id].spent += Util.toInt(r.amount, 0);
+              truth[id].players += 1;
+            });
+            allTeams.filter(t => t.tournament_id === tid).forEach(t => {
+              const want = truth[String(t.team_id)] || { spent: 0, players: 0 };
+              T.assertEqual(Util.toInt(t.purse_used, 0), want.spent,
+                tid + ' team "' + t.team_name + '": purse_used is ' + t.purse_used +
+                ' but the current SOLD rows add up to ' + want.spent + '. The counter ' +
+                'is a cache of AuctionResults and it has drifted.');
+              T.assertEqual(Util.toInt(t.players_count, 0), want.players,
+                tid + ' team "' + t.team_name + '": players_count is ' + t.players_count +
+                ' but ' + want.players + ' current SOLD rows point at it');
+              T.assert(Util.toInt(t.purse_used, 0) <= Util.toInt(t.purse_total, 0),
+                tid + ' team "' + t.team_name + '" has spent more than its purse');
+              T.assert(Util.toInt(t.players_count, 0) <= Util.toInt(t.max_players, 0),
+                tid + ' team "' + t.team_name + '" holds more players than its squad size');
+            });
+
+            // --- 3. every Players row agrees with its own standing result row
+            const byPlayer = {};
+            rows.forEach(r => { if (r.is_current === true) byPlayer[String(r.player_id)] = r; });
+            allPlayers.filter(p => p.tournament_id === tid).forEach(p => {
+              const r = byPlayer[String(p.player_id)];
+
+              // A player the system says is SOLD must have a sale behind them.
+              if (String(p.auction_status) === AS.SOLD) {
+                T.assert(r && String(r.status) === RS.SOLD,
+                  tid + ' player #' + p.serial_no + ' is SOLD on the Players tab with no ' +
+                  'current SOLD row behind them. Their money is charged against nothing.');
+              }
+              if (!r) return;
+
+              if (String(r.status) === RS.SOLD) {
+                T.assertEqual(String(p.auction_status), AS.SOLD,
+                  tid + ' player #' + p.serial_no + ': the standing result is a sale but ' +
+                  'the Players row says ' + p.auction_status);
+                T.assertEqual(String(p.team_id), String(r.team_id),
+                  tid + ' player #' + p.serial_no + ' points at a different team from ' +
+                  'their own sale row');
+                T.assertEqual(Util.toInt(p.sold_amount, 0), Util.toInt(r.amount, 0),
+                  tid + ' player #' + p.serial_no + ': the Players row says ' +
+                  p.sold_amount + ' and the sale row says ' + r.amount);
+                T.assert(!Util.isBlank(p.sold_at),
+                  tid + ' player #' + p.serial_no + ' is sold with no sold_at');
+              } else if (String(r.status) === RS.UNSOLD) {
+                T.assertEqual(String(p.auction_status), AS.UNSOLD,
+                  tid + ' player #' + p.serial_no + ': the standing result is UNSOLD but ' +
+                  'the Players row says ' + p.auction_status);
+                T.assertEqual(String(p.team_id || ''), '',
+                  tid + ' player #' + p.serial_no + ' is unsold but holds a team_id');
+              } else {
+                T.assertEqual(String(p.auction_status), AS.PENDING,
+                  tid + ' player #' + p.serial_no + ': the standing result returned them ' +
+                  'to the pool but the Players row says ' + p.auction_status);
+                T.assertEqual(String(p.team_id || ''), '',
+                  tid + ' player #' + p.serial_no + ' is back in the pool but still holds ' +
+                  'a team_id — that is money spent against nobody');
+                T.assertEqual(Util.isBlank(p.sold_amount), true,
+                  tid + ' player #' + p.serial_no + ' is back in the pool but still ' +
+                  'carries sold_amount ' + T._fmt(p.sold_amount));
+              }
+            });
+
+            // --- 4. a superseding row always points at a real row of the same player
+            rows.filter(r => !Util.isBlank(r.supersedes_auction_id)).forEach(r => {
+              const target = rows.filter(x =>
+                String(x.auction_id) === String(r.supersedes_auction_id))[0];
+              T.assert(target,
+                tid + ' result ' + r.auction_id + ' supersedes ' +
+                r.supersedes_auction_id + ', which is not in this tournament');
+              T.assertEqual(String(target.player_id), String(r.player_id),
+                tid + ' result ' + r.auction_id + ' supersedes a row about a DIFFERENT ' +
+                'player');
+              T.assertEqual(target.is_current, false,
+                tid + ' result ' + target.auction_id + ' has been superseded but is ' +
+                'still flagged is_current');
+            });
+          });
+        });
+    });
+  },
+
+  // ===========================================================================
+  // Reports — CONTRACTS-PHASE4-7.md PHASE 6 and PHASE 7 item 1.
+  // Rationale: DESIGN.md §6.9 (the four labels), §10, §35, §42, §45.
+  //
+  // A CSV export is only worth anything if the person who receives it can open
+  // it in Excel and sum a column. Four separate things silently break that, and
+  // each has its own test below: a currency symbol turning a numeric column into
+  // text, a 10-digit mobile becoming 9.87654E+09, a comma inside a name shifting
+  // every later column on that row, and a missing BOM rendering Tamil names as
+  // mojibake.
+  //
+  // Every parse assertion goes through Suites._parseCsv, a real RFC 4180 reader
+  // written for this suite. Splitting on commas would pass on a file that Excel
+  // cannot read, which is precisely the bug being hunted.
+  // ===========================================================================
+
+  reports() {
+    T.suite('Reports', function () {
+      const admin = Suites._adminSession('rptadm');
+      const PS = ENUM.PAYMENT_STATUS;
+      const AS = ENUM.AUCTION_STATUS;
+      const fx = {};
+
+      /**
+       * One tournament carrying every shape the exports have to survive: a name
+       * with a comma, a name with a double quote, a Tamil name, all four auction
+       * outcomes, an empty team, and a superseded result row.
+       */
+      function world() {
+        if (fx.world) return fx.world;
+        const t = Suites._seedTournament('rptmain', {
+          withFolders: false, status: ENUM.TOURNAMENT_STATUS.AUCTION_CLOSED, reg_fee: 500
+        });
+        const kings = Suites._seedTeam(t.tid, {
+          team_name: 'ZZ Kings', purse_total: 1000000, max_players: 3,
+          purse_used: 375000, players_count: 2
+        });
+        const queens = Suites._seedTeam(t.tid, {
+          team_name: 'ZZ Queens', purse_total: 800000, max_players: 3,
+          purse_used: 75000, players_count: 1
+        });
+        const jokers = Suites._seedTeam(t.tid, {
+          team_name: 'ZZ Jokers', purse_total: 600000, max_players: 3
+        });
+
+        const roster = Suites._seedRoster(t.tid, [
+          // A comma in a name is not exotic. One of 400 people will have one, and
+          // an unquoted field shifts every later column on that row.
+          { serial_no: 1, name: 'ZZ Comma, Player', payment_status: PS.VERIFIED,
+            auction_status: AS.SOLD, team_id: kings.team_id, sold_amount: 125000,
+            sold_at: '2026-08-30T18:40:00.000Z', times_called: 1 },
+          // A double quote has to be escaped by doubling it (RFC 4180).
+          { serial_no: 2, name: 'ZZ "Quote" Player', payment_status: PS.VERIFIED,
+            auction_status: AS.SOLD, team_id: kings.team_id, sold_amount: 250000,
+            sold_at: '2026-08-30T18:45:00.000Z', times_called: 1 },
+          // Names may be in any script (KNOWN-ISSUES, decisions recorded). Without
+          // the BOM this one is mojibake in Excel on Windows.
+          { serial_no: 3, name: 'ராஜ் குமார்', payment_status: PS.VERIFIED,
+            auction_status: AS.SOLD, team_id: queens.team_id, sold_amount: 75000,
+            sold_at: '2026-08-30T18:50:00.000Z', times_called: 2 },
+          { serial_no: 4, name: 'ZZ Nobody Bid', payment_status: PS.VERIFIED,
+            auction_status: AS.UNSOLD, times_called: 1 },
+          { serial_no: 5, name: 'ZZ Back In Pool', payment_status: PS.VERIFIED,
+            auction_status: AS.PENDING, times_called: 3 },
+          { serial_no: 6, name: 'ZZ Never Reached', payment_status: PS.VERIFIED,
+            auction_status: AS.PENDING, times_called: 0 },
+          { serial_no: 7, name: 'ZZ Unpaid', payment_status: PS.PENDING, times_called: 0 }
+        ]);
+
+        // History, including one superseded row so report.final has a correction
+        // to show and dashboard.adminStats has one to count.
+        const superseded = Suites._seedResult(t.tid, {
+          player_id: roster.bySerial[1].player.player_id, serial_no: 1,
+          team_id: kings.team_id, amount: 900000, is_current: false,
+          auction_time: '2026-08-30T18:35:00.000Z', recorded_by: admin.user_id
+        });
+        Suites._seedResult(t.tid, {
+          player_id: roster.bySerial[1].player.player_id, serial_no: 1,
+          team_id: kings.team_id, amount: 125000,
+          auction_time: '2026-08-30T18:40:00.000Z', recorded_by: admin.user_id,
+          supersedes_auction_id: superseded.auction_id, note: 'ZZ extra zero'
+        });
+        Suites._seedResult(t.tid, {
+          player_id: roster.bySerial[2].player.player_id, serial_no: 2,
+          team_id: kings.team_id, amount: 250000,
+          auction_time: '2026-08-30T18:45:00.000Z', recorded_by: admin.user_id
+        });
+        Suites._seedResult(t.tid, {
+          player_id: roster.bySerial[3].player.player_id, serial_no: 3,
+          team_id: queens.team_id, amount: 75000,
+          auction_time: '2026-08-30T18:50:00.000Z', recorded_by: admin.user_id
+        });
+        Suites._seedResult(t.tid, {
+          player_id: roster.bySerial[4].player.player_id, serial_no: 4,
+          status: ENUM.RESULT_STATUS.UNSOLD, amount: '',
+          auction_time: '2026-08-30T18:55:00.000Z', recorded_by: admin.user_id
+        });
+
+        fx.world = {
+          tid: t.tid, slug: t.slug,
+          teams: { kings: kings, queens: queens, jokers: jokers },
+          players: roster.players, bySerial: roster.bySerial
+        };
+        return fx.world;
+      }
+
+      /** Run an export and hand back the envelope, the decoded text and the grid. */
+      function csv(action, session) {
+        const out = Suites._call(action, { tournamentId: world().tid }, session || admin);
+        T.assertEqual(out.mime, REPORT_MIME_CSV, action + ' must declare the CSV mime type');
+        T.assert(typeof out.base64 === 'string' && out.base64.length > 0,
+          action + ' must return base64 content, got ' + T._fmt(out.base64));
+        const text = Suites._decodeCsv(out.base64);
+        // The BOM is asserted separately; it is stripped here so the first header
+        // cell compares as plain text.
+        const body = (text.charAt(0) === REPORT_BOM) ? text.slice(1) : text;
+        return { out: out, text: text, grid: Suites._parseCsv(body) };
+      }
+
+      /** A grid row indexed by its header, so a column move fails loudly. */
+      function byHeader(grid) {
+        const head = grid[0];
+        return grid.slice(1).map(cells => {
+          const row = {};
+          head.forEach((h, i) => { row[h] = (i < cells.length) ? cells[i] : undefined; });
+          row._cells = cells;
+          return row;
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('exports are POST-only for ADMIN and ORGANISER; stats and audit are ADMIN',
+        function () {
+          ['report.players', 'report.teams', 'report.auction', 'report.final']
+            .forEach(name => {
+              const r = Suites._route(name);
+              T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+              T.assert(r.methods.indexOf('GET') === -1,
+                name + ' must not be offered on GET — the player export carries 400 ' +
+                'mobile numbers and a GET URL is callable from a link with no token');
+              T.assert(r.auth !== 'PUBLIC', name + ' must never be PUBLIC');
+              T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN) &&
+                Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER),
+                name + ' must allow both roles: an organiser running the auction needs ' +
+                'the team sheet in their hand, and it is their own tournament\'s data. ' +
+                'Got auth = ' + T._fmt(r.auth));
+            });
+
+          ['dashboard.adminStats', 'audit.list'].forEach(name => {
+            const r = Suites._route(name);
+            T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+            T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+              name + ' must allow ADMIN');
+            T.assert(!Suites._authAllows(r.auth, ENUM.USER_ROLE.ORGANISER),
+              name + ' is ADMIN only. adminStats reports across every tournament when ' +
+              'no id is given, and the audit trail is evidence about the organisers ' +
+              'themselves. Got auth = ' + T._fmt(r.auth));
+          });
+
+          // An organiser really can export their own tournament, through the real
+          // front door, and really cannot export somebody else's.
+          const w = world();
+          const organiser = Suites._organiserSession('rptorg', w.tid);
+          const mine = Suites._dispatch('report.players', { tournamentId: w.tid },
+            organiser.token, 'POST');
+          T.assertEqual(mine.ok, true,
+            'an organiser must be able to export their own tournament, got ' +
+            T._fmt(mine.error));
+          const elsewhere = Suites._seedTournament('rptelse', { withFolders: false });
+          const theirs = Suites._dispatch('report.players', { tournamentId: elsewhere.tid },
+            organiser.token, 'POST');
+          T.assertEqual(theirs.ok, false, 'and nobody else\'s');
+          T.assertEqual(theirs.error.code, ERR.FORBIDDEN,
+            'a valid token pointed at another tournament is FORBIDDEN');
+        });
+
+      // -----------------------------------------------------------------------
+      // RFC 4180 round trip — the test the naive split would pass
+      // -----------------------------------------------------------------------
+
+      T.test('every CSV parses back exactly, including comma, quote and Tamil names',
+        function () {
+          const w = world();
+          const files = {
+            players: csv('report.players'),
+            teams: csv('report.teams'),
+            auction: csv('report.auction'),
+            final: csv('report.final')
+          };
+
+          Object.keys(files).forEach(kind => {
+            T.assertEqual(files[kind].text.charAt(0), REPORT_BOM,
+              'the ' + kind + ' export must start with a UTF-8 BOM. Without it Excel on ' +
+              'Windows guesses the code page and every non-Latin name comes out as ' +
+              'mojibake — and names are explicitly allowed in any script.');
+            T.assert(files[kind].text.indexOf(REPORT_EOL) !== -1,
+              'the ' + kind + ' export must use CRLF line endings (RFC 4180)');
+            T.assert(files[kind].grid.length > 1,
+              'the ' + kind + ' export has no data rows at all');
+          });
+
+          // ---- report.players: the column list is fixed by the requirement
+          const players = files.players;
+          T.assertEqual(players.grid[0], [
+            'Serial No', 'Name', 'DOB', 'Role', 'Style', 'Mobile', 'Payment Reference',
+            'Payment Status', 'Auction Status', 'Team', 'Purchase Amount'
+          ], 'the Player List columns are copied verbatim from CONTRACTS-PHASE4-7 PHASE 6');
+          T.assertEqual(players.grid.length, 8, 'one header row and seven players');
+          T.assertEqual(players.out.rows, 7, 'and the envelope says so too');
+
+          players.grid.forEach((cells, i) => {
+            T.assertEqual(cells.length, 11,
+              'row ' + i + ' of the player export has ' + cells.length + ' fields, not ' +
+              '11. A field written without quoting is exactly how every later column ' +
+              'on a row ends up shifted by one.');
+          });
+
+          const rows = byHeader(players.grid);
+          const bySerial = {};
+          rows.forEach(r => { bySerial[r['Serial No']] = r; });
+
+          T.assertEqual(bySerial['1'].Name, 'ZZ Comma, Player',
+            'a name containing a comma must come back BYTE FOR BYTE. If this fails, ' +
+            'the Team and Purchase Amount columns on that row are one place out and no ' +
+            'total in the workbook is right.');
+          T.assertEqual(bySerial['2'].Name, 'ZZ "Quote" Player',
+            'a name containing a double quote must come back unchanged — the quotes are ' +
+            'doubled inside the field and undoubled on the way out');
+          T.assertEqual(bySerial['3'].Name, 'ராஜ் குமார்',
+            'and a Tamil name must survive the UTF-8 round trip intact');
+
+          // The raw text has to be quoted the way RFC 4180 says, not merely
+          // parseable by a forgiving reader.
+          T.assert(players.text.indexOf('"ZZ Comma, Player"') !== -1,
+            'the comma name must be wrapped in quotes in the file itself');
+          T.assert(players.text.indexOf('"ZZ ""Quote"" Player"') !== -1,
+            'and the quote name must have its quotes doubled');
+
+          // ---- report.teams and report.auction keep their shape too
+          T.assertEqual(files.teams.grid[0], [
+            'Team', 'Player', 'Purchase Amount', 'Total Players', 'Total Spent',
+            'Remaining Purse'
+          ], 'the Team Report columns');
+          files.teams.grid.forEach((cells, i) => {
+            T.assertEqual(cells.length, 6, 'team row ' + i + ' must have 6 fields');
+          });
+
+          T.assertEqual(files.auction.grid[0], [
+            'Serial No', 'Player', 'Status', 'Team', 'Purchase Amount', 'Auction Time'
+          ], 'the Auction Report columns');
+          files.auction.grid.forEach((cells, i) => {
+            T.assertEqual(cells.length, 6, 'auction row ' + i + ' must have 6 fields');
+          });
+
+          // The awkward names appear, correctly, in every file that lists players.
+          [files.teams, files.auction, files.final].forEach(f => {
+            const flat = f.grid.map(cells => cells.join(' ')).join(' ');
+            ['ZZ Comma, Player', 'ZZ "Quote" Player', 'ராஜ் குமார்'].forEach(name => {
+              T.assert(flat.indexOf(name) !== -1,
+                'the name "' + name + '" did not survive the round trip in ' +
+                f.out.filename);
+            });
+          });
+
+          T.assert(files.players.out.filename.indexOf(w.slug) === 0,
+            'the filename starts with the tournament slug, got ' +
+            T._fmt(files.players.out.filename));
+        });
+
+      // -----------------------------------------------------------------------
+      // Excel: money and mobiles
+      // -----------------------------------------------------------------------
+
+      T.test('money columns are bare integers — no rupee symbol, no thousands separator',
+        function () {
+          // ONE currency symbol makes the whole column TEXT, and every SUM in the
+          // workbook then returns 0 with nothing on screen to say why. Util.formatINR
+          // is for screens; it must never reach a CSV numeric column.
+          const files = ['report.players', 'report.teams', 'report.auction', 'report.final']
+            .map(a => csv(a));
+
+          files.forEach(f => {
+            T.assert(f.text.indexOf('₹') === -1,
+              f.out.filename + ' contains a ₹ symbol. That turns the money column into ' +
+              'text in Excel and silently breaks every total in the sheet.');
+          });
+
+          const money = (grid, header) => {
+            const rows = byHeader(grid);
+            return rows.map(r => r[header]);
+          };
+
+          money(files[0].grid, 'Purchase Amount').forEach(cell => {
+            T.assert(/^[0-9]*$/.test(cell),
+              'a Purchase Amount cell must be bare digits or empty, got ' + T._fmt(cell));
+          });
+          ['Purchase Amount', 'Total Spent', 'Remaining Purse', 'Total Players']
+            .forEach(header => {
+              money(files[1].grid, header).forEach(cell => {
+                T.assert(/^[0-9]*$/.test(cell),
+                  'the ' + header + ' column must be bare digits, got ' + T._fmt(cell));
+              });
+            });
+          money(files[2].grid, 'Purchase Amount').forEach(cell => {
+            T.assert(/^[0-9]*$/.test(cell),
+              'the auction report Purchase Amount must be bare digits, got ' + T._fmt(cell));
+          });
+
+          // The values are right, not merely well-shaped.
+          const rows = byHeader(files[0].grid);
+          const bySerial = {};
+          rows.forEach(r => { bySerial[r['Serial No']] = r; });
+          T.assertEqual(bySerial['1']['Purchase Amount'], '125000',
+            'the exact integer, with no grouping — 1,25,000 would be four cells');
+          T.assertEqual(bySerial['2']['Purchase Amount'], '250000', 'and the next one');
+          T.assertEqual(bySerial['6']['Purchase Amount'], '',
+            'a player who was never sold gets an EMPTY cell, not a 0. SUM ignores an ' +
+            'empty cell, which is what "not sold" should contribute.');
+        });
+
+      T.test('mobile numbers and UPI references carry the ="..." Excel wrapper', function () {
+        // Without it a 10-digit mobile is read as a number and shown as 9.87654E+09,
+        // and Excel will reinterpret an alphanumeric UPI reference like 1234E5 as
+        // scientific notation too.
+        const w = world();
+        const f = csv('report.players');
+        const rows = byHeader(f.grid);
+        const bySerial = {};
+        rows.forEach(r => { bySerial[r['Serial No']] = r; });
+
+        w.players.forEach(p => {
+          const cell = bySerial[String(p.serial_no)];
+          T.assert(cell, 'serial ' + p.serial_no + ' is missing from the export');
+          T.assertEqual(cell.Mobile, '="' + p.mobile + '"',
+            'the Mobile cell must be the ="..." formula form, got ' + T._fmt(cell.Mobile));
+        });
+
+        const payments = Repo.readAll(SHEETS.PAYMENTS).filter(r => r.tournament_id === w.tid);
+        const refByPlayer = {};
+        payments.forEach(r => { refByPlayer[r.player_id] = r.upi_ref; });
+        w.players.forEach(p => {
+          const ref = refByPlayer[p.player_id];
+          if (Util.isBlank(ref)) return;
+          T.assertEqual(bySerial[String(p.serial_no)]['Payment Reference'], '="' + ref + '"',
+            'the UPI reference needs the same protection as the mobile number');
+        });
+
+        // And in the file itself the quotes are doubled, so the cell survives a
+        // reader that is stricter than Excel.
+        T.assert(f.text.indexOf('"=""') !== -1,
+          'the ="..." wrapper must itself be quoted and its quotes doubled in the file');
+      });
+
+      // -----------------------------------------------------------------------
+      // The four honest labels — DESIGN.md §6.9
+      // -----------------------------------------------------------------------
+
+      T.test('all four auction labels land on the right rows', function () {
+        // All 400 players paid the fee, and roughly 300 are never called. "Not
+        // called" has to be a visible, explainable outcome, and "nobody bid on
+        // you" is a different sentence from "your number never came up".
+        const files = { players: csv('report.players'), auction: csv('report.auction') };
+
+        [['players', 'Auction Status'], ['auction', 'Status']].forEach(pair => {
+          const rows = byHeader(files[pair[0]].grid);
+          const bySerial = {};
+          rows.forEach(r => { bySerial[r['Serial No']] = r; });
+          const label = s => bySerial[String(s)][pair[1]];
+
+          T.assertEqual(label(1), REPORT_LABEL.SOLD,
+            pair[0] + ': a bought player reads "' + REPORT_LABEL.SOLD + '"');
+          T.assertEqual(label(4), REPORT_LABEL.UNSOLD,
+            pair[0] + ': UNSOLD means they came to the table and nobody bid');
+          T.assertEqual(label(5), REPORT_LABEL.AWAITING,
+            pair[0] + ': PENDING with times_called = 3 is "' + REPORT_LABEL.AWAITING +
+            '" — they were returned to the pool and may still sell (DESIGN.md §6.6)');
+          T.assertEqual(label(6), REPORT_LABEL.NOT_CALLED,
+            pair[0] + ': PENDING with times_called = 0 is "' + REPORT_LABEL.NOT_CALLED +
+            '". Reporting that as "Pending" hides the single most common outcome ' +
+            'behind a word that sounds like a delay.');
+          T.assertEqual(label(7), REPORT_LABEL.NOT_CALLED,
+            pair[0] + ': an unpaid player was never in the pool, so they were never ' +
+            'called either');
+
+          // The raw statuses must not appear anywhere in the column.
+          rows.forEach(r => {
+            T.assert([REPORT_LABEL.SOLD, REPORT_LABEL.UNSOLD, REPORT_LABEL.AWAITING,
+              REPORT_LABEL.NOT_CALLED].indexOf(r[pair[1]]) !== -1,
+              pair[0] + ' row for serial ' + r['Serial No'] + ' has the status "' +
+              r[pair[1]] + '", which is not one of the four labels of DESIGN.md §6.9');
+          });
+        });
+
+        // The payment column is a separate fact, and a withdrawal is annotated
+        // rather than hidden.
+        const pRows = byHeader(files.players.grid);
+        const byS = {};
+        pRows.forEach(r => { byS[r['Serial No']] = r; });
+        T.assertEqual(byS['1']['Payment Status'], 'Verified', 'a verified payment');
+        T.assertEqual(byS['7']['Payment Status'], 'Pending', 'and one still waiting');
+        T.assertEqual(byS['1'].Team, 'ZZ Kings', 'the Team column names the buyer');
+        T.assertEqual(byS['6'].Team, '', 'and is empty for a player nobody bought');
+      });
+
+      // -----------------------------------------------------------------------
+      // The team report has to add up to itself
+      // -----------------------------------------------------------------------
+
+      T.test('team report totals equal the sum of the player rows above them', function () {
+        // The totals are derived from the rows in THIS FILE, not read off
+        // Teams.purse_used, so the file is internally consistent whatever the
+        // cached counters say. A reader who sums the column and gets a different
+        // number from the Total Spent cell has no way to tell which one to trust.
+        const f = csv('report.teams');
+        const rows = byHeader(f.grid);
+
+        const groups = {};
+        const order = [];
+        rows.forEach(r => {
+          const name = r.Team;
+          if (!groups[name]) { groups[name] = []; order.push(name); }
+          groups[name].push(r);
+        });
+
+        T.assertEqual(order, ['ZZ Jokers', 'ZZ Kings', 'ZZ Queens'],
+          'every team appears, sorted by name — a team that bought nobody must still ' +
+          'get a row, because a team silently missing is a worse error than a blank cell');
+
+        const purses = { 'ZZ Jokers': 600000, 'ZZ Kings': 1000000, 'ZZ Queens': 800000 };
+        order.forEach(name => {
+          const group = groups[name];
+          let summed = 0;
+          let players = 0;
+          group.forEach(r => {
+            if (r.Player !== '') {
+              players++;
+              summed += Util.toInt(r['Purchase Amount'], 0);
+            }
+          });
+
+          group.forEach(r => {
+            T.assertEqual(Util.toInt(r['Total Spent'], 0), summed,
+              name + ': Total Spent says ' + r['Total Spent'] + ' but the Purchase ' +
+              'Amount cells above it add up to ' + summed);
+            T.assertEqual(Util.toInt(r['Total Players'], 0), players,
+              name + ': Total Players says ' + r['Total Players'] + ' but ' + players +
+              ' player rows are listed');
+            T.assertEqual(Util.toInt(r['Remaining Purse'], 0), purses[name] - summed,
+              name + ': Remaining Purse must be the purse minus what this file says ' +
+              'was spent');
+            T.assertEqual(r['Total Spent'], group[0]['Total Spent'],
+              name + ': the team-level columns repeat on every row of the team, so a ' +
+              'reader who sorts the sheet by Purchase Amount does not lose which ' +
+              'totals belong to which team');
+          });
+        });
+
+        T.assertEqual(groups['ZZ Kings'].length, 2, 'Kings bought two players');
+        T.assertEqual(Util.toInt(groups['ZZ Kings'][0]['Total Spent'], 0), 375000,
+          '125000 + 250000');
+        T.assertEqual(groups['ZZ Jokers'].length, 1, 'the empty team gets exactly one row');
+        T.assertEqual(groups['ZZ Jokers'][0].Player, '', 'with no player on it');
+        T.assertEqual(groups['ZZ Jokers'][0]['Total Spent'], '0', 'and nothing spent');
+        T.assertEqual(groups['ZZ Jokers'][0]['Remaining Purse'], '600000',
+          'so its whole purse remains');
+      });
+
+      // -----------------------------------------------------------------------
+      // The filename date is the IST calendar day
+      // -----------------------------------------------------------------------
+
+      T.test('the export filename is stamped with the IST day, not the UTC one', function () {
+        // A report generated at 12:15 AM in Chennai must not be filed under
+        // yesterday's date. This one genuinely needs a pinned clock: with the real
+        // one the test would pass at any hour outside the 00:00-05:30 IST window
+        // whether the code went through Util.todayIso or not.
+        const w = world();
+        Suites._withFakeNow('2026-08-30T19:00:00.000Z', function () {
+          const out = Suites._call('report.players', { tournamentId: w.tid }, admin);
+          T.assertEqual(out.filename, w.slug + '-players-2026-08-31.csv',
+            '19:00Z on 30 Aug is 00:30 IST on the 31st, so the file belongs to the 31st');
+        });
+        Suites._withFakeNow('2026-08-30T18:29:00.000Z', function () {
+          const out = Suites._call('report.teams', { tournamentId: w.tid }, admin);
+          T.assertEqual(out.filename, w.slug + '-teams-2026-08-30.csv',
+            'one minute before IST midnight is still the 30th');
+        });
+
+        // And the times inside the file are IST wall clock, not the stored UTC.
+        const auction = csv('report.auction');
+        const rows = byHeader(auction.grid);
+        const first = rows.filter(r => r['Serial No'] === '1')[0];
+        T.assertEqual(first['Auction Time'], Util.formatIST('2026-08-30T18:40:00.000Z', true),
+          'the sale was recorded at 18:40Z, which is 12:10 AM on the 31st in Chennai — ' +
+          'a raw UTC instant in a report is both unreadable and wrong-looking to ' +
+          'everybody who was in the hall');
+      });
+
+      // -----------------------------------------------------------------------
+      // audit.list — CONTRACTS-PHASE4-7 PHASE 7 item 1
+      // -----------------------------------------------------------------------
+
+      T.test('audit.list pages, filters and honours an IST date range', function () {
+        const t = Suites._seedTournament('rptaud', { withFolders: false });
+        const other = TEST_FIXTURES.ACTOR;
+        const A = Audit.ACTIONS;
+
+        // Written directly, with chosen instants. Provoking seven real audit rows
+        // through seven real actions would take three tabs of fixtures and would
+        // still not let a test pin the timestamps, which is the whole point here.
+        const seeded = [
+          { action: A.TEAM_CREATED, actor_user_id: admin.user_id, entity_id: 'TEM_zzaud1',
+            timestamp: '2026-08-29T10:00:00.000Z' },
+          { action: A.TEAM_CREATED, actor_user_id: admin.user_id, entity_id: 'TEM_zzaud2',
+            timestamp: '2026-08-30T10:00:00.000Z' },
+          { action: A.TEAM_UPDATED, actor_user_id: other, entity_id: 'TEM_zzaud1',
+            timestamp: '2026-08-30T12:00:00.000Z' },
+          // 18:45Z on 30 Aug is 00:15 IST on the 31st. This row is the IST test.
+          // Not a round hour, deliberately: a stored instant that happens to be
+          // local midnight in the spreadsheet's own timezone comes back out of
+          // Repo as a bare date, which would fail this for the wrong reason.
+          { action: A.PLAYER_SOLD, actor_user_id: admin.user_id, entity_id: 'PLY_zzaud1',
+            timestamp: '2026-08-30T18:45:00.000Z',
+            prev_value: '{"auction_status":"PENDING"}',
+            new_value: '{"auction_status":"SOLD","sold_amount":125000}' },
+          { action: A.PLAYER_SOLD, actor_user_id: other, entity_id: 'PLY_zzaud2',
+            timestamp: '2026-08-31T10:00:00.000Z' },
+          { action: A.PAYMENT_VERIFIED, actor_user_id: admin.user_id, entity_id: 'PAY_zzaud1',
+            timestamp: '2026-09-01T10:00:00.000Z' },
+          { action: A.PAYMENT_REJECTED, actor_user_id: admin.user_id, entity_id: 'PAY_zzaud2',
+            timestamp: '2026-09-02T10:00:00.000Z' }
+        ];
+        seeded.forEach(s => Suites._seedAudit(t.tid, s));
+        const list = (payload) => {
+          const body = { tournamentId: t.tid };
+          Object.keys(payload || {}).forEach(k => { body[k] = payload[k]; });
+          return Suites._call('audit.list', body, admin);
+        };
+
+        // ---- newest first, and the page maths
+        const all = list({ pageSize: 200 });
+        T.assertEqual(all.total, 7, 'all seven fixture rows are in scope');
+        T.assertEqual(all.rows.map(r => r.entity_id),
+          ['PAY_zzaud2', 'PAY_zzaud1', 'PLY_zzaud2', 'PLY_zzaud1', 'TEM_zzaud1',
+           'TEM_zzaud2', 'TEM_zzaud1'],
+          'newest first — the admin opens the trail on what just happened');
+        T.assertEqual(all.actions,
+          ['PAYMENT_REJECTED', 'PAYMENT_VERIFIED', 'PLAYER_SOLD', 'TEAM_CREATED',
+           'TEAM_UPDATED'],
+          'the action menu is scoped to the tournament and sorted, so a filter never ' +
+          'empties the dropdown it was chosen from');
+
+        const p1 = list({ pageSize: 3, page: 1 });
+        T.assertEqual(p1.rows.length, 3, 'three rows on page one');
+        T.assertEqual(p1.total, 7, 'out of seven');
+        T.assertEqual(p1.totalPages, 3, 'over three pages');
+        T.assertEqual(p1.pageSize, 3, 'and the page size is echoed');
+        const p3 = list({ pageSize: 3, page: 3 });
+        T.assertEqual(p3.rows.length, 1, 'the last page holds the remainder');
+        T.assertEqual(p3.rows[0].entity_id, 'TEM_zzaud1', 'the oldest row');
+        const p9 = list({ pageSize: 3, page: 9 });
+        T.assertEqual(p9.rows, [],
+          'a page past the end is an empty list, not an error: the admin may be on ' +
+          'page 8 when a filter change shrinks the result to two pages');
+        T.assertEqual(p9.total, 7, 'and the totals still describe the whole result');
+        T.assertEqual(list({ pageSize: 5000 }).pageSize, REPORT_AUDIT_PAGE_MAX,
+          'the page size is capped, so one call cannot pull the whole tab');
+        T.assertEqual(list({}).pageSize, REPORT_AUDIT_PAGE_DEFAULT,
+          'and defaults when the caller says nothing');
+
+        // ---- filters
+        T.assertEqual(list({ action: A.PLAYER_SOLD, pageSize: 200 }).total, 2,
+          'filtering by action');
+        T.assertEqual(list({ action: 'player_sold', pageSize: 200 }).total, 2,
+          'and it is case-insensitive');
+        T.assertThrows(() => list({ action: 'BANANA' }), ERR.VALIDATION_FAILED,
+          'an action that is not in the frozen Audit.ACTIONS map');
+
+        T.assertEqual(list({ entityId: 'TEM_zzaud1', pageSize: 200 }).total, 2,
+          'filtering by entity, which is how "who changed this team?" is answered');
+
+        T.assertEqual(list({ actor: admin.user_id, pageSize: 200 }).total, 5,
+          'filtering by actor id');
+        T.assertEqual(list({ actor: 'rptadm', pageSize: 200 }).total, 5,
+          'and by a fragment of the actor\'s name or email, because nobody remembers ' +
+          'a USR_ id');
+        T.assertEqual(list({ actor: other, pageSize: 200 }).total, 2,
+          'the other actor\'s rows');
+
+        // ---- the IST date range (CONTRACTS.md §6a rule 2)
+        const from31 = list({ from: '2026-08-31', pageSize: 200 });
+        T.assertEqual(from31.total, 4,
+          'a bare "2026-08-31" starts at 00:00 IST, which is 18:30Z on the 30th. The ' +
+          'row at 18:45Z on 30 Aug happened at 00:15 IST on the 31st and MUST be in. ' +
+          'Comparing as UTC would drop it and lose most of the day.');
+        T.assert(from31.rows.map(r => r.entity_id).indexOf('PLY_zzaud1') !== -1,
+          'and that is the row in question');
+        T.assertEqual(list({ to: '2026-08-31', pageSize: 200 }).total, 5,
+          'a bare "to" date covers the whole IST day, ending at 18:29:59.999Z');
+        T.assertEqual(list({ from: '2026-08-31', to: '2026-08-31', pageSize: 200 }).total, 2,
+          'and both together select exactly one IST day');
+        T.assertEqual(
+          list({ from: '2026-08-31', to: '2026-08-31', action: A.PLAYER_SOLD,
+                 pageSize: 200 }).total, 2,
+          'filters combine');
+
+        T.assertThrows(() => list({ from: '2026-09-02', to: '2026-08-01' }),
+          ERR.VALIDATION_FAILED,
+          'bounds the wrong way round return nothing, which looks like a data problem; ' +
+          'say what actually happened instead');
+        T.assertThrows(() => list({ from: '31-08-2026' }), ERR.VALIDATION_FAILED,
+          'dd-mm-yyyy is not a date this system accepts');
+        T.assertThrows(() => list({ from: '2026-02-30' }), ERR.VALIDATION_FAILED,
+          'and an impossible day must not roll silently into March');
+
+        // ---- the row shape
+        const row = all.rows.filter(r => r.entity_id === 'PLY_zzaud1')[0];
+        T.assertEqual(Object.keys(row).sort(), [
+          'action', 'action_display', 'actor_name', 'actor_role', 'actor_user_id',
+          'entity_id', 'entity_type', 'log_id', 'new_value', 'prev_value',
+          'timestamp', 'timestamp_display', 'tournament_id', 'user_agent'
+        ], 'the audit row shape');
+        T.assertEqual(row.new_value, { auction_status: 'SOLD', sold_amount: 125000 },
+          'prev_value and new_value are parsed back into objects so the screen can ' +
+          'render a field-by-field diff');
+        T.assertEqual(row.prev_value, { auction_status: 'PENDING' }, 'both of them');
+        T.assertEqual(row.actor_name, 'ZZ rptadm',
+          'the trail resolves the actor to a readable name rather than a USR_ id');
+        T.assertEqual(row.timestamp_display, Util.formatIST(row.timestamp, true),
+          'and renders the instant in IST');
+      });
+
+      T.test('NO route in this module writes to AuditLog', function () {
+        // ======================= THE ONE THAT MATTERS =========================
+        // The AuditLog tab is append-only evidence. It is what settles "the
+        // organiser says I never paid" three months after the tournament
+        // (DESIGN.md §42), and evidence that can be edited from the same admin
+        // screen that is being disputed is not evidence.
+        //
+        // Reporting reads history; it does not make history. An export is a read,
+        // and Audit.ACTIONS has no export action — so running every route in this
+        // module must leave the trail byte-for-byte unchanged.
+        // ======================================================================
+        const w = world();
+        const before = Repo.readAll(SHEETS.AUDIT_LOG).map(r => JSON.stringify(r));
+
+        Suites._call('report.players', { tournamentId: w.tid }, admin);
+        Suites._call('report.teams', { tournamentId: w.tid }, admin);
+        Suites._call('report.auction', { tournamentId: w.tid }, admin);
+        Suites._call('report.final', { tournamentId: w.tid }, admin);
+        Suites._call('dashboard.adminStats', { tournamentId: w.tid }, admin);
+        Suites._call('audit.list', { tournamentId: w.tid, pageSize: 200 }, admin);
+
+        const after = Repo.readAll(SHEETS.AUDIT_LOG).map(r => JSON.stringify(r));
+        T.assertEqual(after.length, before.length,
+          'the AuditLog grew by ' + (after.length - before.length) + ' row(s) while ' +
+          'nothing but reports ran');
+        T.assertEqual(after, before,
+          'and not one existing row may have been rewritten either');
+
+        // There must be no route anywhere that could edit or remove a row.
+        const actions = Object.keys(buildRoutes());
+        actions.forEach(a => {
+          T.assert(!/^audit\./.test(a) || a === 'audit.list',
+            'the only audit route may be audit.list; found "' + a + '"');
+          T.assert(!/(audit).*(update|delete|edit|clear|remove|write|purge)/i.test(a),
+            'a route that could change the audit trail is registered: "' + a + '"');
+        });
+
+        // adminStats is a read too, and it reports the counter drift rather than
+        // papering over it (DESIGN.md §35).
+        const stats = Suites._call('dashboard.adminStats', { tournamentId: w.tid }, admin);
+        T.assertEqual(stats.scope, 'TOURNAMENT', 'scoped to the one tournament');
+        T.assertEqual(stats.tournaments.length, 1, 'one block comes back');
+        const block = stats.tournaments[0];
+        T.assertEqual(block.auction.sold, 3, 'three sold players');
+        T.assertEqual(block.auction.unsold, 1, 'one nobody bid on');
+        T.assertEqual(block.auction.awaiting_reauction, 1, 'one waiting for a re-auction');
+        T.assertEqual(block.auction.not_called, 1,
+          'and one never called — the unpaid player is not in the pool at all, so ' +
+          'counting them here would inflate the number the banner quotes');
+        T.assertEqual(
+          block.auction.sold + block.auction.unsold + block.auction.awaiting_reauction +
+          block.auction.not_called, block.registrations.eligible,
+          'the four labels must partition the eligible pool exactly');
+        T.assertEqual(block.purse.spent, 450000, '125000 + 250000 + 75000');
+        T.assertEqual(block.purse.counters_match, true,
+          'the fixture counters agree with the player rows, so adminStats says so');
+        T.assertEqual(block.auction.corrections, 1,
+          'and the one superseded row is counted as a correction');
+      });
+    });
+  },
+
+  // ===========================================================================
   // Util
   // ===========================================================================
 
@@ -4932,11 +8201,15 @@ const Suites = {
       photo_thumb_url: Drive.thumbUrl(photoId, 320),
       payment_status: s.payment_status || ENUM.PAYMENT_STATUS.PENDING,
       auction_status: s.auction_status || ENUM.AUCTION_STATUS.PENDING,
-      times_called: 0,
+      // Defaults to 0, which is what every pre-Phase-4 caller relies on. The
+      // Reports suite sets it explicitly because the difference between
+      // "Awaiting re-auction" and "Not called" is nothing but this number
+      // (DESIGN.md §6.9).
+      times_called: Util.toInt(s.times_called, 0),
       team_id: s.team_id || '',
       // Blank, not 0: "never sold" and "sold for nothing" are different facts.
       sold_amount: (s.sold_amount === undefined) ? '' : s.sold_amount,
-      sold_at: '',
+      sold_at: s.sold_at || '',
       is_withdrawn: s.is_withdrawn === true,
       search_blob: (name + ' ' + role + ' ' + style).toLowerCase(),
       registered_at: s.registered_at || Util.nowIso()
@@ -5004,6 +8277,194 @@ const Suites = {
       bySerial[p.serial_no] = { player: p, payment: payments[i] };
     });
     return { players: players, payments: payments, bySerial: bySerial };
+  },
+
+  /**
+   * @private Write one Teams row directly, bypassing team.create.
+   *
+   * Used wherever a team is scenery, and — more importantly — wherever a fixture
+   * needs a NON-ZERO purse_used or players_count. Phase 3 only ever writes zeros
+   * (CONTRACTS-PHASE3 §3) and Phase 4 maintains the counters inside the sale
+   * lock, so the only way to test a Phase 3 guard against "12 players already
+   * bought" without running twelve sales is to write the number.
+   *
+   * Every call site that does that says so. The Auction suite deliberately does
+   * NOT: its counters have to stay derivable from AuctionResults, because the
+   * invariant sweep at the end of that suite re-derives every one of them.
+   *
+   * @param {string} tournamentId the tournament
+   * @param {Object=} spec row fields worth varying; everything else is defaulted
+   * @return {!Object} the written row, with _row set
+   */
+  _seedTeam(tournamentId, spec) {
+    const s = spec || {};
+    return Repo.append(SHEETS.TEAMS, {
+      team_id: s.team_id || Util.uid(ID_PREFIX.TEAM),
+      tournament_id: tournamentId,
+      team_name: s.team_name || ('ZZ Team ' + Suites._seqLetters()),
+      owner_name: s.owner_name || '',
+      logo_file_id: '',
+      purse_total: (s.purse_total === undefined) ? 1000000 : s.purse_total,
+      purse_used: (s.purse_used === undefined) ? 0 : s.purse_used,
+      max_players: (s.max_players === undefined) ? 13 : s.max_players,
+      players_count: (s.players_count === undefined) ? 0 : s.players_count,
+      created_at: s.created_at || Util.nowIso(),
+      created_by: TEST_FIXTURES.ACTOR
+    });
+  },
+
+  /**
+   * @private Seed several teams in order.
+   * @param {string} tournamentId the tournament
+   * @param {!Array<!Object>} specs one spec per team
+   * @return {!Array<!Object>} the written rows
+   */
+  _seedTeams(tournamentId, specs) {
+    return (specs || []).map(s => Suites._seedTeam(tournamentId, s));
+  },
+
+  /**
+   * @private Write one AuctionResults row directly.
+   *
+   * The tab is append-only and Phase 4 is its only real writer, so this exists
+   * for the two things that need history without a sale: proving that
+   * Teams.recomputeCounters ignores a superseded row, and giving a report a
+   * correction to display.
+   *
+   * `is_current` defaults to TRUE, because a lone seeded row is normally meant
+   * to be the standing answer. Pass `is_current: false` for a superseded one.
+   *
+   * @param {string} tournamentId the tournament
+   * @param {Object=} spec row fields
+   * @return {!Object} the written row, with _row set
+   */
+  _seedResult(tournamentId, spec) {
+    const s = spec || {};
+    return Repo.append(SHEETS.AUCTION_RESULTS, {
+      auction_id: s.auction_id || Util.uid(ID_PREFIX.AUCTION),
+      tournament_id: tournamentId,
+      player_id: s.player_id || '',
+      serial_no: Util.toInt(s.serial_no, 0),
+      status: s.status || ENUM.RESULT_STATUS.SOLD,
+      team_id: s.team_id || '',
+      // Blank, not 0, for a non-sale — the same rule Auction._appendResult follows.
+      amount: (s.amount === undefined) ? '' : s.amount,
+      auction_time: s.auction_time || Util.nowIso(),
+      recorded_by: s.recorded_by || TEST_FIXTURES.ACTOR,
+      is_current: s.is_current !== false,
+      supersedes_auction_id: s.supersedes_auction_id || '',
+      note: s.note || ''
+    });
+  },
+
+  /**
+   * @private Write one AuditLog row directly.
+   *
+   * Only the audit VIEWER tests use this. Provoking a spread of actions, actors
+   * and timestamps through real operations would take several tabs of fixtures
+   * and would still not let a test pin the instants, which is exactly what an
+   * IST date-range test has to do.
+   *
+   * The row carries a fixture tournament_id, so the existing cleanup purge finds
+   * it — an audit row is the one kind of debris that cannot be tidied later.
+   *
+   * @param {string} tournamentId the tournament
+   * @param {Object=} spec row fields
+   * @return {!Object} the written row, with _row set
+   */
+  _seedAudit(tournamentId, spec) {
+    const s = spec || {};
+    return Repo.append(SHEETS.AUDIT_LOG, {
+      log_id: s.log_id || Util.uid(ID_PREFIX.LOG),
+      timestamp: s.timestamp || Util.nowIso(),
+      actor_user_id: s.actor_user_id || TEST_FIXTURES.ACTOR,
+      actor_role: s.actor_role || ENUM.USER_ROLE.ADMIN,
+      action: s.action || Audit.ACTIONS.TEAM_CREATED,
+      tournament_id: tournamentId,
+      entity_type: s.entity_type || 'Team',
+      entity_id: s.entity_id || '',
+      prev_value: (s.prev_value === undefined) ? '' : s.prev_value,
+      new_value: (s.new_value === undefined) ? '' : s.new_value,
+      user_agent: s.user_agent || 'zz-test-agent'
+    });
+  },
+
+  /**
+   * @private Pull the one-time token out of an organiser joinUrl.
+   *
+   * The plain token exists in exactly one place — this URL — so every organiser
+   * test has to read it back out of the link the way the organiser's browser
+   * would (CONTRACTS-PHASE3 §1).
+   *
+   * @param {string} joinUrl the joinUrl from organiser.create / resendLink
+   * @return {string} the decoded token
+   */
+  _joinToken(joinUrl) {
+    const s = (joinUrl === null || joinUrl === undefined) ? '' : String(joinUrl);
+    const at = s.indexOf('?k=');
+    if (at === -1) {
+      T._fail('the joinUrl must carry the one-time token as "?k=", got ' + T._fmt(joinUrl));
+    }
+    return decodeURIComponent(s.slice(at + 3));
+  },
+
+  /**
+   * @private Decode a base64 CSV export back into text.
+   * @param {string} base64 the `base64` field of an export envelope
+   * @return {string} the file contents, BOM included
+   */
+  _decodeCsv(base64) {
+    return Utilities.newBlob(Utilities.base64Decode(String(base64))).getDataAsString('UTF-8');
+  },
+
+  /**
+   * @private A real RFC 4180 reader, written here on purpose.
+   *
+   * WHY NOT text.split(','): the whole point of the export tests is that a name
+   * containing a comma, a double quote or a newline does not shift the columns
+   * after it. A naive split would happily pass on a file Excel cannot read,
+   * which is the one bug these tests exist to catch. So the parser handles the
+   * three things the format actually specifies: fields wrapped in quotes,
+   * embedded quotes doubled, and CRLF row terminators.
+   *
+   * The BOM is NOT stripped here — a caller that wants to assert it is present
+   * needs to see it.
+   *
+   * @param {string} text the CSV document
+   * @return {!Array<!Array<string>>} rows of fields
+   */
+  _parseCsv(text) {
+    const s = (text === null || text === undefined) ? '' : String(text);
+    const rows = [];
+    let row = [];
+    let field = '';
+    let inQuotes = false;
+    let i = 0;
+
+    while (i < s.length) {
+      const ch = s.charAt(i);
+      if (inQuotes) {
+        if (ch === '"') {
+          // A doubled quote inside a quoted field is one literal quote.
+          if (s.charAt(i + 1) === '"') { field += '"'; i += 2; continue; }
+          inQuotes = false; i++; continue;
+        }
+        field += ch; i++; continue;
+      }
+      if (ch === '"') { inQuotes = true; i++; continue; }
+      if (ch === ',') { row.push(field); field = ''; i++; continue; }
+      if (ch === '\r' && s.charAt(i + 1) === '\n') {
+        row.push(field); rows.push(row); row = []; field = ''; i += 2; continue;
+      }
+      if (ch === '\n' || ch === '\r') {
+        row.push(field); rows.push(row); row = []; field = ''; i++; continue;
+      }
+      field += ch; i++;
+    }
+    // A document that ends with its terminator leaves nothing pending, and must
+    // not produce a phantom empty row.
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows;
   },
 
   /**
@@ -5421,7 +8882,8 @@ function runAllTests() {
  * suite" exemption, because every suite writes rows.
  *
  * @param {string} suiteName one of Util, IST, Tournament, Registration,
- *     PlayerList, PaymentVerify, Repo, Auth, Cache, Drive.
+ *     PlayerList, PaymentVerify, Organiser, Teams, Auction, Reports, Repo, Auth,
+ *     Cache, Drive.
  * @return {!Object} {total, passed, failed, elapsedMs, failures}
  */
 function runTest(suiteName) {
