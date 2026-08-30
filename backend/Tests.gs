@@ -64,15 +64,59 @@ const T = {
     driveIds: [],      // {id, kind:'file'|'folder'} created by the Drive suite
     userIds: [],       // fixture user_ids, so Sessions rows can be found
     emails: [],        // fixture emails, so login-failure counters can be cleared
-    cacheTids: []      // tournament ids whose cache/version keys must be purged
+    cacheTids: [],     // tournament ids whose cache/version keys must be purged
+    tids: [],          // fixture tournament ids that do NOT carry TID_PREFIX
+    seq: 0             // monotonic counter for unique fixture mobiles / upi refs
   },
 
   /** Wipes run state. Called by both entry points. */
   reset() {
     T._state = {
       suites: [], results: [], current: null, startedAt: 0,
-      driveIds: [], userIds: [], emails: [], cacheTids: []
+      driveIds: [], userIds: [], emails: [], cacheTids: [], tids: [], seq: 0
     };
+  },
+
+  /**
+   * A run-unique number. Used to mint fixture mobile numbers and UPI references
+   * that cannot collide with each other inside one run.
+   * @return {number}
+   */
+  nextSeq() {
+    T._state.seq += 1;
+    return T._state.seq;
+  },
+
+  /**
+   * Registers a tournament id for cleanup.
+   *
+   * Most fixtures pick their own id and start with TEST_FIXTURES.TID_PREFIX, which
+   * cleanup finds by prefix match. `tournament.create` mints its own id, so the
+   * Tournament suite has to hand it over explicitly or the row, its Drive folders,
+   * its audit rows and its version counter would all survive the run.
+   *
+   * @param {string} tid
+   * @return {string} the same tid, so this can wrap an expression.
+   */
+  trackTid(tid) {
+    if (typeof tid === 'string' && tid && T._state.tids.indexOf(tid) === -1) {
+      T._state.tids.push(tid);
+      T._state.cacheTids.push(tid);
+    }
+    return tid;
+  },
+
+  /**
+   * Registers a Drive id for trashing, ignoring duplicates.
+   * @param {string} id
+   * @param {string} kind 'file' or 'folder'
+   */
+  trackDrive(id, kind) {
+    if (!id || typeof id !== 'string') return;
+    for (let i = 0; i < T._state.driveIds.length; i++) {
+      if (T._state.driveIds[i].id === id) return;
+    }
+    T._state.driveIds.push({ id: id, kind: kind });
   },
 
   // ---------------------------------------------------------------------------
@@ -399,6 +443,12 @@ const T = {
   cleanup() {
     const notes = [];
 
+    // --- Drive ids that only exist on a sheet row -----------------------------
+    // Must happen BEFORE the rows are purged: a tournament's folder id, a player's
+    // photo id and a payment's screenshot id are only discoverable from the row
+    // that is about to be deleted.
+    T._collectDriveFixtures(notes);
+
     // --- Sheet rows -----------------------------------------------------------
     // Collect fixture user ids first: Sessions rows are found by user_id, and the
     // Users rows themselves are gone by the time we would need them.
@@ -448,6 +498,11 @@ const T = {
           props.deleteProperty(k);
         }
       });
+      // Tournaments created by tournament.create carry a normal random id, so the
+      // "zz" prefix scan above cannot see them. Delete those counters by name.
+      T._state.tids.forEach(tid => {
+        try { props.deleteProperty('v:' + tid); } catch (e) { /* best effort */ }
+      });
     } catch (e) {
       notes.push('could not purge version counters: ' + T._errText(e));
     }
@@ -461,9 +516,55 @@ const T = {
     }
   },
 
+  /**
+   * @private Walks the fixture rows and registers every Drive id they point at,
+   * so files and folders created through `tournament.create` / `player.register`
+   * are trashed even though no test ever saw the raw id.
+   *
+   * Every step is individually guarded: this runs from cleanup(), which runs from
+   * a `finally`, so it must survive a half-built world without throwing.
+   */
+  _collectDriveFixtures(notes) {
+    // Player photos and payment screenshots first, then the tournament root
+    // folders, so children are registered before their parent (the order
+    // _trashDriveFixtures relies on).
+    try {
+      Repo.readAll(SHEETS.PLAYERS).forEach(p => {
+        if (T._isFixtureTid(p.tournament_id)) T.trackDrive(p.photo_file_id, 'file');
+      });
+    } catch (e) {
+      notes.push('could not scan Players for Drive ids: ' + T._errText(e));
+    }
+    try {
+      Repo.readAll(SHEETS.PAYMENTS).forEach(p => {
+        if (T._isFixtureTid(p.tournament_id)) T.trackDrive(p.screenshot_file_id, 'file');
+      });
+    } catch (e) {
+      notes.push('could not scan Payments for Drive ids: ' + T._errText(e));
+    }
+    try {
+      Repo.readAll(SHEETS.TOURNAMENTS).forEach(t => {
+        if (!T._isFixtureTid(t.tournament_id)) return;
+        T.trackDrive(t.logo_file_id, 'file');
+        T.trackDrive(t.qr_file_id, 'file');
+        const gallery = Util.safeJsonParse(t.photo_file_ids, []);
+        if (Array.isArray(gallery)) gallery.forEach(id => T.trackDrive(id, 'file'));
+        // The tournament root goes last: trashing it takes public/, private/ and
+        // everything under them with it.
+        T.trackDrive(t.drive_folder_id, 'folder');
+      });
+    } catch (e) {
+      notes.push('could not scan Tournaments for Drive ids: ' + T._errText(e));
+    }
+  },
+
   /** @private */
   _isFixtureTid(v) {
-    return typeof v === 'string' && v.indexOf(TEST_FIXTURES.TID_PREFIX) === 0;
+    if (typeof v !== 'string' || !v) return false;
+    if (v.indexOf(TEST_FIXTURES.TID_PREFIX) === 0) return true;
+    // Tournaments minted by tournament.create get a normal random id and are
+    // registered explicitly by T.trackTid.
+    return T._state.tids.indexOf(v) !== -1;
   },
 
   /** @private */
@@ -509,12 +610,16 @@ const T = {
           return;
         }
         if (item.kind === 'folder') {
-          DriveApp.getFolderById(item.id).setTrashed(true);
+          const f = DriveApp.getFolderById(item.id);
+          if (!f.isTrashed()) f.setTrashed(true);
         } else {
-          DriveApp.getFileById(item.id).setTrashed(true);
+          const f = DriveApp.getFileById(item.id);
+          // A player photo inside an already-trashed tournament folder is the
+          // common case; skipping it keeps the warning list meaningful.
+          if (!f.isTrashed()) f.setTrashed(true);
         }
       } catch (e) {
-        // Already trashed as part of a parent folder is the common case here.
+        // Already gone as part of a parent folder is the other common case here.
         notes.push('could not trash Drive ' + item.kind + ' ' + item.id + ': ' + T._errText(e));
       }
     });
@@ -553,7 +658,7 @@ const T = {
     });
     order.forEach(name => {
       const t = tally[name];
-      T._log('  ' + (t.fail === 0 ? 'PASS' : 'FAIL') + '  ' + T._pad(name, 10) +
+      T._log('  ' + (t.fail === 0 ? 'PASS' : 'FAIL') + '  ' + T._pad(name, 12) +
         '  ' + t.pass + '/' + (t.pass + t.fail) + ' passed  (' + t.ms + ' ms)');
     });
 
@@ -601,10 +706,12 @@ const T = {
  */
 const Suites = {
 
-  /** Registers every Phase 0 suite, in run order. */
+  /** Registers every suite, in run order. */
   defineAll() {
     Suites.util();
     Suites.ist();
+    Suites.tournament();
+    Suites.registration();
     Suites.repo();
     Suites.auth();
     Suites.cache();
@@ -613,7 +720,7 @@ const Suites = {
 
   /** @return {!Array<string>} the names, for the "unknown suite" error message. */
   names() {
-    return ['Util', 'IST', 'Repo', 'Auth', 'Cache', 'Drive'];
+    return ['Util', 'IST', 'Tournament', 'Registration', 'Repo', 'Auth', 'Cache', 'Drive'];
   },
 
   // ===========================================================================
@@ -725,6 +832,1128 @@ const Suites = {
         T.assert(/Z$/.test(n), 'instants are stored with a Z suffix');
         T.assert(Math.abs(Date.parse(n) - new Date().getTime()) < 5000,
           'nowIso is the real UTC instant, not shifted by the IST offset');
+      });
+    });
+  },
+
+  // ===========================================================================
+  // Tournament — CONTRACTS-PHASE1.md §2
+  //
+  // Every action is reached through buildRoutes(), not through the module object
+  // directly. The action NAMES are pinned by the contract; the internal function
+  // names are not, so going through the route table is the only way to test the
+  // thing that was actually agreed. It also lets each test assert the route's
+  // declared auth level, which is where the authorisation contract lives.
+  // ===========================================================================
+
+  tournament() {
+    T.suite('Tournament', function () {
+      const session = Suites._adminSession('trnadmin');
+
+      // Fixtures are built lazily and memoised. If tournament.create is missing or
+      // broken, that shows up as a failure in each test that needs it rather than
+      // as one "<suite body>" failure that hides the other ten.
+      const fx = {};
+
+      /** The one tournament created with real logo/QR/gallery images. */
+      function mainTournament() {
+        if (!fx.main) {
+          fx.main = Suites._createTournament(session, 'main', {
+            logo: Suites._imageField('png', 'zz-logo.png'),
+            qr: Suites._imageField('png', 'zz-qr.png'),          // QR stays PNG (§1)
+            gallery: [Suites._imageField('jpeg', 'zz-gallery-1.jpg')]
+          });
+        }
+        return fx.main;
+      }
+
+      /** The row behind mainTournament(), for the fields getPublic must not leak. */
+      function mainRow() {
+        const t = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', mainTournament().tournament_id);
+        T.assert(t !== null, 'tournament.create returned an id with no Tournaments row behind it');
+        return t;
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('every Phase 1 tournament action is registered with the right exposure',
+        function () {
+          // CONTRACTS-PHASE1.md §2 pins the action names, the HTTP verbs and who may
+          // call them. It does NOT pin how a route spells "ADMIN only" (Code.gs
+          // accepts a role array or the string 'ANY'), so the auth assertion checks
+          // the meaning via Suites._authAllows rather than a literal.
+          const create = Suites._route('tournament.create');
+          T.assert(create.methods.indexOf('POST') !== -1, 'tournament.create must accept POST');
+          T.assert(create.methods.indexOf('GET') === -1,
+            'tournament.create must NOT be reachable over GET — a GET route is callable ' +
+            'from a link, with no token');
+          T.assert(create.auth !== 'PUBLIC', 'tournament.create must not be PUBLIC');
+          T.assert(Suites._authAllows(create.auth, ENUM.USER_ROLE.ADMIN),
+            'tournament.create must allow ADMIN, got auth = ' + T._fmt(create.auth));
+
+          ['tournament.update', 'tournament.list', 'tournament.setStatus'].forEach(name => {
+            const r = Suites._route(name);
+            T.assert(r.methods.indexOf('POST') !== -1, name + ' must accept POST');
+            T.assert(r.auth !== 'PUBLIC', name + ' must not be PUBLIC');
+            T.assert(Suites._authAllows(r.auth, ENUM.USER_ROLE.ADMIN),
+              name + ' must allow ADMIN, got auth = ' + T._fmt(r.auth));
+          });
+
+          const get = Suites._route('tournament.get');
+          T.assert(get.auth !== 'PUBLIC',
+            'tournament.get returns the full row and must never be PUBLIC — that is ' +
+            'what tournament.getPublic exists for');
+
+          const pub = Suites._route('tournament.getPublic');
+          T.assertEqual(pub.auth, 'PUBLIC', 'tournament.getPublic is the public landing page');
+          T.assert(pub.methods.indexOf('GET') !== -1, 'getPublic must accept GET');
+          T.assert(pub.methods.indexOf('POST') !== -1, 'getPublic must accept POST');
+        });
+
+      // -----------------------------------------------------------------------
+      // create
+      // -----------------------------------------------------------------------
+
+      T.test('create returns a tournament id, a slug, DRAFT status and a registration URL',
+        function () {
+          const out = mainTournament();
+          T.assert(out && typeof out === 'object', 'create must return an object');
+
+          T.assertEqual(out.tournament_id.slice(0, ID_PREFIX.TOURNAMENT.length),
+            ID_PREFIX.TOURNAMENT, 'tournament_id prefix (CONTRACTS.md §4)');
+          T.assertEqual(out.tournament_id.length, ID_PREFIX.TOURNAMENT.length + 12,
+            'tournament_id is the prefix plus 12 chars, got "' + out.tournament_id + '"');
+
+          T.assert(typeof out.slug === 'string' && out.slug.length > 0, 'slug must be present');
+          T.assert(/^[a-z0-9-]+$/.test(out.slug),
+            'the slug goes into a URL and a Drive folder name: "' + out.slug + '"');
+
+          T.assertEqual(out.status, ENUM.TOURNAMENT_STATUS.DRAFT,
+            'a new tournament starts in DRAFT — registration is opened deliberately');
+
+          // CONTRACTS does not pin the URL base (it is per-deployment), so assert the
+          // shape: a non-empty string that carries the id the player needs.
+          T.assert(typeof out.registrationUrl === 'string' && out.registrationUrl.length > 0,
+            'registrationUrl must be present, got ' + T._fmt(out.registrationUrl));
+          T.assert(out.registrationUrl.indexOf(out.tournament_id) !== -1,
+            'registrationUrl must carry the tournament id, got ' + T._fmt(out.registrationUrl));
+          T.assert(typeof out.displayUrl === 'string' && out.displayUrl.length > 0,
+            'displayUrl must be present, got ' + T._fmt(out.displayUrl));
+          T.assert(out.displayUrl !== out.registrationUrl,
+            'the projector URL and the registration URL are different pages');
+        });
+
+      T.test('create sets next_serial to 1 and generates a display_token', function () {
+        const row = mainRow();
+        T.assertEqual(row.next_serial, 1,
+          'the first player must be serial 1; anything else means the counter was ' +
+          'never initialised and Repo.nextSerial will start from a stale value');
+        T.assertEqual(typeof row.next_serial, 'number', 'next_serial is a number');
+
+        T.assert(!Util.isBlank(row.display_token),
+          'a projector URL cannot be issued without a display_token');
+        T.assert(typeof row.display_token === 'string', 'display_token must be a string');
+        T.assert(row.display_token !== row.tournament_id,
+          'the display token must not just be the tournament id — the id is public');
+        // CONTRACTS does not pin the token length or alphabet, only that one exists,
+        // so this asserts "long enough not to be guessable" and nothing more.
+        T.assert(String(row.display_token).length >= 16,
+          'display_token looks too short to be a token: ' + T._fmt(row.display_token));
+
+        T.assertEqual(row.status, ENUM.TOURNAMENT_STATUS.DRAFT, 'the stored status is DRAFT');
+        T.assert(!isNaN(Date.parse(row.created_at)),
+          'created_at must be a parseable instant, got ' + T._fmt(row.created_at));
+        T.assert(!Util.isBlank(row.drive_folder_id),
+          'create must build the Drive folder tree and store its root id');
+      });
+
+      T.test('create rejects every field the contract says it must', function () {
+        // CONTRACTS-PHASE1.md §2: name 3-80, regStart <= regEnd, regFee >= 0,
+        // defaultMaxPlayers >= 1, upiId matches something@something,
+        // contactMobile passes Util.isValidMobileIN.
+        const before = Repo.count(SHEETS.TOURNAMENTS, {});
+
+        const reject = (tag, overrides, why) => {
+          T.assertThrows(
+            () => Suites._call('tournament.create', Suites._createPayload(tag, overrides), session),
+            ERR.VALIDATION_FAILED, why);
+        };
+
+        reject('short', { name: 'ZZ' }, 'a 2-character name is under the 3-char minimum');
+        reject('order', { regStart: '2026-08-31', regEnd: '2026-08-01' },
+          'regStart after regEnd is a window that can never open');
+        reject('fee', { regFee: -1 }, 'a negative registration fee');
+        reject('maxp', { defaultMaxPlayers: 0 },
+          'defaultMaxPlayers must be at least 1 — 0 pre-fills every team as already full');
+        reject('upi', { upiId: 'notaupiid' },
+          'a UPI id with no @ cannot be paid to, and it is printed on the QR page');
+        reject('mobile', { contactMobile: '12345' },
+          'contactMobile must pass Util.isValidMobileIN');
+
+        T.assertEqual(Repo.count(SHEETS.TOURNAMENTS, {}), before,
+          'a rejected create must leave no row behind — validation runs before any ' +
+          'write (CONTRACTS-PHASE1.md §2)');
+
+        // If it DID leave one behind, the assertion above has already failed; make
+        // sure cleanup can still find the debris rather than leaving it on the sheet.
+        // Every fixture tournament name in this file starts "ZZ".
+        Repo.readAll(SHEETS.TOURNAMENTS).forEach(r => {
+          if (typeof r.name === 'string' && r.name.indexOf('ZZ') === 0) {
+            T.trackTid(r.tournament_id);
+          }
+        });
+      });
+
+      T.test('two tournaments with the same name get two distinct slugs', function () {
+        // A slug is part of the registration URL and of the Drive folder name. Two
+        // tournaments sharing one would send half the registrations to the wrong
+        // event. CONTRACTS does not pin the disambiguation scheme (a "-2" suffix and
+        // a random suffix are both fine), so this asserts distinctness and shape.
+        const name = 'ZZ Test Collision Cup';
+        const a = Suites._createTournament(session, 'cola', { name: name });
+        const b = Suites._createTournament(session, 'colb', { name: name });
+
+        T.assert(a.slug !== b.slug,
+          'both tournaments got the slug "' + a.slug + '" — the second registration ' +
+          'link would point at the first tournament');
+        T.assert(a.tournament_id !== b.tournament_id, 'and the ids must differ too');
+        [a.slug, b.slug].forEach(s => {
+          T.assert(/^[a-z0-9-]+$/.test(s), 'slug "' + s + '" is not URL-safe');
+          T.assert(s.charAt(0) !== '-' && s.charAt(s.length - 1) !== '-',
+            'slug "' + s + '" has a leading or trailing hyphen');
+        });
+      });
+
+      // -----------------------------------------------------------------------
+      // getPublic — the DESIGN.md §46 security boundary
+      // -----------------------------------------------------------------------
+
+      T.test('getPublic returns ONLY the allow-listed fields', function () {
+        // THE MOST IMPORTANT TEST IN THIS SUITE.
+        //
+        // getPublic is called by an anonymous browser. DESIGN.md §46 and §16 risk #4
+        // make it an allow-list built field by field: never the sheet row with keys
+        // deleted, because the next column added to the Tournaments tab would then
+        // leak by default.
+        //
+        // The key comparison below is EXACT and copied verbatim from
+        // CONTRACTS-PHASE1.md §2. That is deliberate: adding a field to the response
+        // must fail this test and force a contract change, not sail through.
+        const allowed = [
+          'tournament_id', 'name', 'description', 'rules',
+          'reg_fee', 'reg_fee_display',
+          'logo_url', 'qr_url', 'qr_download_url',
+          'gallery_urls',
+          'upi_id', 'contact_name', 'contact_mobile',
+          'reg_start', 'reg_end',
+          'reg_start_display', 'reg_end_display',
+          'registration_open', 'registration_message'
+        ];
+
+        const row = mainRow();
+        const out = Suites._call('tournament.getPublic', { tournamentId: row.tournament_id }, null);
+        T.assert(out && typeof out === 'object', 'getPublic must return an object');
+
+        T.assertEqual(Object.keys(out).sort(), allowed.slice().sort(),
+          'the getPublic response must be EXACTLY the allow-list in ' +
+          'CONTRACTS-PHASE1.md §2. An extra key here is a data leak to an anonymous ' +
+          'caller; a missing key breaks the registration page.');
+
+        // Named explicitly as well, so a failure says what leaked rather than just
+        // "one extra key". These are the fields DESIGN.md §46 calls out by name.
+        const forbidden = [
+          'drive_folder_id', 'display_token', 'next_serial', 'created_by',
+          'contact_email', 'created_at', 'status', 'slug',
+          'logo_file_id', 'qr_file_id', 'photo_file_ids',
+          'default_purse', 'default_max_players', 'start_date', 'end_date', '_row',
+          'players', 'player_count', 'player_list', 'verified_count', 'serial_no',
+          'next_serial_no', 'mobile', 'sheet_id', 'spreadsheet_id'
+        ];
+        const keys = Object.keys(out);
+        forbidden.forEach(k => {
+          T.assert(keys.indexOf(k) === -1,
+            'getPublic leaked the key "' + k + '". Keys present: ' + keys.join(', '));
+        });
+        keys.forEach(k => {
+          T.assert(k.toLowerCase().indexOf('player') === -1,
+            'getPublic must never carry player data or a player count: key "' + k + '"');
+        });
+
+        // Key names are only half of it: a value could be nested inside an allowed
+        // key. Scan the serialised response for the actual secrets.
+        const wire = JSON.stringify(out);
+        [['display_token', row.display_token],
+         ['drive_folder_id', row.drive_folder_id],
+         ['contact_email', row.contact_email],
+         ['created_by', row.created_by]].forEach(pair => {
+          if (Util.isBlank(pair[1])) return;
+          T.assert(wire.indexOf(String(pair[1])) === -1,
+            'the value of ' + pair[0] + ' appears somewhere inside the getPublic ' +
+            'response, even though the key does not');
+        });
+
+        // And the fields the registration page actually needs are right.
+        T.assertEqual(out.tournament_id, row.tournament_id, 'tournament_id echoed');
+        T.assertEqual(out.reg_fee, row.reg_fee, 'reg_fee is the raw integer');
+        T.assertEqual(out.reg_fee_display, Util.formatINR(row.reg_fee),
+          'reg_fee_display is the ₹-formatted form of the same number');
+        T.assert(Array.isArray(out.gallery_urls), 'gallery_urls must be an array');
+        T.assertEqual(typeof out.registration_open, 'boolean',
+          'registration_open must be a real boolean, not the string "FALSE"');
+        T.assertEqual(typeof out.registration_message, 'string',
+          'registration_message must always be a string, "" when open');
+      });
+
+      T.test('getPublic registration_open follows the IST window, not the clock', function () {
+        // Driven with explicit instants, never the real clock: the window boundaries
+        // are IST day boundaries (CONTRACTS.md §6a) and a test that just uses "now"
+        // passes at any hour whether or not the code is right.
+        const t = Suites._seedTournament('pubwin', {
+          status: ENUM.TOURNAMENT_STATUS.REG_OPEN,
+          reg_start: '2026-08-01', reg_end: '2026-08-31',
+          withFolders: false
+        });
+        const get = () => Suites._call('tournament.getPublic', { tournamentId: t.tid }, null);
+
+        Suites._withFakeNow('2026-07-20T06:00:00.000Z', function () {
+          T.assertEqual(get().registration_open, false, 'eleven days before the window opens');
+        });
+        Suites._withFakeNow('2026-08-15T06:00:00.000Z', function () {
+          T.assertEqual(get().registration_open, true, 'the middle of the window');
+        });
+        Suites._withFakeNow('2026-09-05T06:00:00.000Z', function () {
+          T.assertEqual(get().registration_open, false, 'five days after the window closed');
+        });
+
+        // The IST edges, which is where a UTC comparison goes wrong.
+        Suites._withFakeNow('2026-07-31T18:30:00.000Z', function () {
+          T.assertEqual(get().registration_open, true,
+            '00:00 IST on 1 Aug is the first open instant');
+        });
+        Suites._withFakeNow('2026-08-31T18:29:59.000Z', function () {
+          T.assertEqual(get().registration_open, true,
+            'one second before IST midnight on the closing day is still open');
+        });
+        Suites._withFakeNow('2026-08-31T18:30:01.000Z', function () {
+          T.assertEqual(get().registration_open, false,
+            'one second after IST midnight is closed');
+        });
+      });
+
+      T.test('getPublic returns each of the three registration_message strings', function () {
+        // The exact sentences are pinned by CONTRACTS-PHASE1.md §2 — they are shown
+        // to a player, and the date inside them is Util.formatIST(..., false).
+        const open = Suites._seedTournament('pubmsg', {
+          status: ENUM.TOURNAMENT_STATUS.REG_OPEN,
+          reg_start: '2026-08-01', reg_end: '2026-08-31',
+          withFolders: false
+        });
+        const draft = Suites._seedTournament('pubdrf', {
+          status: ENUM.TOURNAMENT_STATUS.DRAFT,
+          reg_start: '2026-08-01', reg_end: '2026-08-31',
+          withFolders: false
+        });
+        const get = (tid) => Suites._call('tournament.getPublic', { tournamentId: tid }, null);
+
+        Suites._withFakeNow('2026-08-15T06:00:00.000Z', function () {
+          const o = get(open.tid);
+          T.assertEqual(o.registration_open, true, 'baseline: open');
+          T.assertEqual(o.registration_message, '',
+            'the message is empty while registration is open');
+        });
+
+        Suites._withFakeNow('2026-07-20T06:00:00.000Z', function () {
+          T.assertEqual(get(open.tid).registration_message,
+            'Registration has not opened yet. It opens on 1 Aug 2026.',
+            'the "not yet" branch, with the start date formatted by Util.formatIST');
+        });
+
+        Suites._withFakeNow('2026-09-05T06:00:00.000Z', function () {
+          T.assertEqual(get(open.tid).registration_message,
+            'Registration closed on 31 Aug 2026.',
+            'the "closed" branch, with the end date formatted by Util.formatIST');
+        });
+
+        Suites._withFakeNow('2026-08-15T06:00:00.000Z', function () {
+          const d = get(draft.tid);
+          T.assertEqual(d.registration_open, false,
+            'registration_open needs status REG_OPEN as well as the window');
+          T.assertEqual(d.registration_message,
+            'Registration is not open for this tournament.',
+            'the any-other-status branch, even though the window itself is open');
+        });
+      });
+
+      T.test('getPublic on an unknown id gives NOT_FOUND and reveals nothing else',
+        function () {
+          // Two different unknown ids: one that looks like a real id and one that is
+          // obvious rubbish. If the two answers differ, an anonymous caller can probe
+          // the id format, and eventually the id space, from the outside.
+          const wellFormed = T.assertThrows(
+            () => Suites._call('tournament.getPublic',
+              { tournamentId: 'TRN_zzzzzzzzzzzz' }, null),
+            ERR.NOT_FOUND, 'a well-formed but unknown tournament id');
+
+          const malformed = T.assertThrows(
+            () => Suites._call('tournament.getPublic',
+              { tournamentId: 'not-a-tournament-id' }, null),
+            ERR.NOT_FOUND,
+            'a malformed id must be NOT_FOUND too, not VALIDATION_FAILED — a ' +
+            'different code tells the caller the id format was at least right');
+
+          T.assertEqual(malformed.message, wellFormed.message,
+            'both must use the IDENTICAL message. A different message for a ' +
+            'well-formed id confirms the format and narrows the search.');
+          T.assert(wellFormed.message.indexOf('TRN_zzzzzzzzzzzz') === -1,
+            'the message must not echo the id back — it is attacker-controlled text ' +
+            'rendered straight into the page');
+        });
+
+      // -----------------------------------------------------------------------
+      // setStatus
+      // -----------------------------------------------------------------------
+
+      T.test('setStatus allows every legal transition in the contract table', function () {
+        const S = ENUM.TOURNAMENT_STATUS;
+        const legal = [
+          [S.DRAFT, S.REG_OPEN],
+          [S.REG_OPEN, S.REG_CLOSED],
+          [S.REG_CLOSED, S.REG_OPEN],          // reopening registration is allowed
+          [S.REG_CLOSED, S.AUCTION_LIVE],
+          [S.REG_OPEN, S.AUCTION_LIVE],        // allowed; warns that reg is still open
+          [S.AUCTION_LIVE, S.AUCTION_CLOSED],
+          [S.AUCTION_CLOSED, S.AUCTION_LIVE]   // ADMIN only, audited (DESIGN.md §44)
+        ];
+        const t = Suites._seedTournament('stsok', { withFolders: false });
+
+        legal.forEach(pair => {
+          Suites._forceStatus(t.tid, pair[0]);
+          let threw = null;
+          try {
+            Suites._call('tournament.setStatus',
+              { tournamentId: t.tid, status: pair[1] }, session);
+          } catch (e) {
+            threw = e;
+          }
+          T.assert(threw === null,
+            pair[0] + ' -> ' + pair[1] + ' is legal (CONTRACTS-PHASE1.md §2) but was ' +
+            'refused: ' + T._errText(threw));
+
+          const after = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', t.tid);
+          T.assertEqual(after.status, pair[1],
+            pair[0] + ' -> ' + pair[1] + ' returned successfully but the row still ' +
+            'says ' + after.status);
+        });
+      });
+
+      T.test('setStatus rejects illegal transitions with VALIDATION_FAILED', function () {
+        const S = ENUM.TOURNAMENT_STATUS;
+        // Deliberately not tested: a same-state move (REG_OPEN -> REG_OPEN). The
+        // table does not list it and "anything else" would make it illegal, but a
+        // harmless no-op is a defensible reading and CONTRACTS does not settle it.
+        const illegal = [
+          [S.DRAFT, S.REG_CLOSED],
+          [S.DRAFT, S.AUCTION_LIVE],
+          [S.DRAFT, S.AUCTION_CLOSED],
+          [S.REG_OPEN, S.DRAFT],
+          [S.REG_CLOSED, S.DRAFT],
+          [S.REG_CLOSED, S.AUCTION_CLOSED],
+          [S.AUCTION_LIVE, S.DRAFT],
+          [S.AUCTION_LIVE, S.REG_OPEN],
+          [S.AUCTION_LIVE, S.REG_CLOSED],
+          [S.AUCTION_CLOSED, S.DRAFT],
+          [S.AUCTION_CLOSED, S.REG_OPEN],
+          [S.AUCTION_CLOSED, S.REG_CLOSED]
+        ];
+        const t = Suites._seedTournament('stsbad', { withFolders: false });
+
+        illegal.forEach(pair => {
+          Suites._forceStatus(t.tid, pair[0]);
+          const e = T.assertThrows(
+            () => Suites._call('tournament.setStatus',
+              { tournamentId: t.tid, status: pair[1] }, session),
+            ERR.VALIDATION_FAILED, pair[0] + ' -> ' + pair[1] + ' must be refused');
+          T.assert(String(e.message).indexOf(pair[0]) !== -1 &&
+            String(e.message).indexOf(pair[1]) !== -1,
+            'the message must name both states (CONTRACTS-PHASE1.md §2), got "' +
+            e.message + '"');
+
+          const after = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', t.tid);
+          T.assertEqual(after.status, pair[0],
+            'a refused transition must leave the status alone, but it became ' +
+            after.status);
+        });
+
+        Suites._forceStatus(t.tid, S.DRAFT);
+        T.assertThrows(
+          () => Suites._call('tournament.setStatus',
+            { tournamentId: t.tid, status: 'BANANA' }, session),
+          ERR.VALIDATION_FAILED, 'a status that is not in the enum at all');
+      });
+
+      // -----------------------------------------------------------------------
+      // list
+      // -----------------------------------------------------------------------
+
+      T.test('list computes player_count and verified_count per tournament', function () {
+        // Tournament isolation (DESIGN.md §39): every row carries a tournament_id and
+        // no count may ever spill across the boundary. Tournament A gets three
+        // players of which two are VERIFIED; tournament B gets one, unverified.
+        const a = Suites._seedTournament('lista', { withFolders: false });
+        const b = Suites._seedTournament('listb', { withFolders: false });
+
+        const addPlayer = (tid, name, paymentStatus) => {
+          Repo.append(SHEETS.PLAYERS, {
+            player_id: Util.uid(ID_PREFIX.PLAYER),
+            tournament_id: tid,
+            serial_no: Repo.count(SHEETS.PLAYERS, { tournament_id: tid }) + 1,
+            name: name,
+            role: ENUM.PLAYER_ROLE.BATSMAN,
+            style: ENUM.PLAYER_STYLE.RIGHT,
+            mobile: Suites._freshMobile(),
+            payment_status: paymentStatus,
+            auction_status: ENUM.AUCTION_STATUS.PENDING,
+            times_called: 0,
+            is_withdrawn: false,
+            registered_at: Util.nowIso()
+          });
+        };
+        addPlayer(a.tid, 'ZZ List A1', ENUM.PAYMENT_STATUS.VERIFIED);
+        addPlayer(a.tid, 'ZZ List A2', ENUM.PAYMENT_STATUS.VERIFIED);
+        addPlayer(a.tid, 'ZZ List A3', ENUM.PAYMENT_STATUS.PENDING);
+        addPlayer(b.tid, 'ZZ List B1', ENUM.PAYMENT_STATUS.PENDING);
+
+        const list = Suites._call('tournament.list', {}, session);
+        T.assert(Array.isArray(list), 'tournament.list must return an array');
+
+        const byId = {};
+        list.forEach(r => { byId[r.tournament_id] = r; });
+        const ra = byId[a.tid];
+        const rb = byId[b.tid];
+        T.assert(ra, 'tournament A is missing from the list');
+        T.assert(rb, 'tournament B is missing from the list');
+
+        T.assertEqual(ra.player_count, 3, 'tournament A has three players');
+        T.assertEqual(ra.verified_count, 2, 'two of A\'s three payments are VERIFIED');
+        T.assertEqual(rb.player_count, 1,
+          'tournament B has exactly one player — a count of 4 means the pass over ' +
+          'Players is not filtering by tournament_id (DESIGN.md §39)');
+        T.assertEqual(rb.verified_count, 0, 'B has no verified payments');
+
+        // The row shape is pinned by CONTRACTS-PHASE1.md §2.
+        T.assertEqual(Object.keys(ra).sort(), [
+          'created_at', 'name', 'player_count', 'reg_end', 'reg_fee', 'reg_start',
+          'slug', 'status', 'tournament_id', 'verified_count'
+        ], 'the admin list row must be exactly the contracted fields');
+      });
+    });
+  },
+
+  // ===========================================================================
+  // Registration — CONTRACTS-PHASE1.md §2 (player.register, player.checkMobile)
+  // and §3 (validation). Rationale: DESIGN.md §6.2, §9, §11, §16.
+  //
+  // These tests upload real images to Drive and write real Players and Payments
+  // rows. Everything is scoped to fixture tournaments whose ids start with
+  // TEST_FIXTURES.TID_PREFIX, and T.cleanup() removes the rows, the Drive files
+  // and the tournament folders even when the suite fails.
+  // ===========================================================================
+
+  registration() {
+    T.suite('Registration', function () {
+      // Tournament ids owned by this suite, for the "no Players row without a
+      // Payments row" invariant. Scoped, because the Repo suite deliberately
+      // appends bare Players rows that have no payment behind them.
+      const regTids = [];
+
+      const fx = {};
+
+      /** Always-open tournament. The window is deliberately wide so these tests
+       *  do not depend on the day they are run. */
+      function main() {
+        if (!fx.main) {
+          fx.main = Suites._seedTournament('regmain', {
+            status: ENUM.TOURNAMENT_STATUS.REG_OPEN,
+            reg_start: '2020-01-01', reg_end: '2099-12-31',
+            start_date: '2026-09-05', end_date: '2026-09-20'
+          });
+          regTids.push(fx.main.tid);
+        }
+        return fx.main;
+      }
+
+      /** A second open tournament, to prove the serial counters are independent. */
+      function other() {
+        if (!fx.other) {
+          fx.other = Suites._seedTournament('regoth', {
+            status: ENUM.TOURNAMENT_STATUS.REG_OPEN,
+            reg_start: '2020-01-01', reg_end: '2099-12-31',
+            start_date: '2026-09-05', end_date: '2026-09-20'
+          });
+          regTids.push(fx.other.tid);
+        }
+        return fx.other;
+      }
+
+      /** Registration window 1-31 Aug 2026, for the IST boundary tests. */
+      function windowed() {
+        if (!fx.win) {
+          fx.win = Suites._seedTournament('regwin', {
+            status: ENUM.TOURNAMENT_STATUS.REG_OPEN,
+            reg_start: '2026-08-01', reg_end: '2026-08-31',
+            start_date: '2026-09-05', end_date: '2026-09-20'
+          });
+          regTids.push(fx.win.tid);
+        }
+        return fx.win;
+      }
+
+      // -----------------------------------------------------------------------
+      // Routing
+      // -----------------------------------------------------------------------
+
+      T.test('player.register and player.checkMobile are PUBLIC POST routes', function () {
+        const reg = Suites._route('player.register');
+        T.assertEqual(reg.auth, 'PUBLIC', 'a player has no account and no token');
+        T.assert(reg.methods.indexOf('POST') !== -1, 'player.register must accept POST');
+        T.assert(reg.methods.indexOf('GET') === -1,
+          'player.register writes rows and uploads images; a GET route would let it ' +
+          'be triggered by a plain link');
+
+        const check = Suites._route('player.checkMobile');
+        T.assertEqual(check.auth, 'PUBLIC', 'the courtesy check runs before login');
+        T.assert(check.methods.indexOf('POST') !== -1, 'player.checkMobile must accept POST');
+        T.assert(check.methods.indexOf('GET') === -1,
+          'GET would put a mobile number into browser history and server logs, and ' +
+          'make enumeration a matter of pasting URLs');
+      });
+
+      // -----------------------------------------------------------------------
+      // Serial allocation
+      // -----------------------------------------------------------------------
+
+      T.test('the first registration gets serial 1 and the second gets serial 2',
+        function () {
+          const t = main();
+          const first = Suites._register(t.tid);
+          T.assertEqual(first.serial_no, 1, 'the first player in a tournament is number 1');
+          T.assertEqual(typeof first.serial_no, 'number', 'serial_no is a number');
+
+          const second = Suites._register(t.tid);
+          T.assertEqual(second.serial_no, 2, 'the second player is number 2');
+          T.assert(first.player_id !== second.player_id, 'two distinct player ids');
+          T.assertEqual(first.player_id.slice(0, ID_PREFIX.PLAYER.length), ID_PREFIX.PLAYER,
+            'player_id prefix');
+
+          // The response shape is pinned by CONTRACTS-PHASE1.md §2.
+          T.assertEqual(Object.keys(second).sort(),
+            ['name', 'player_id', 'registered_at_display', 'serial_no', 'tournament_name'],
+            'player.register must return exactly the contracted fields');
+          T.assertEqual(second.tournament_name, t.row.name, 'the tournament name is echoed');
+          T.assert(!Util.isBlank(second.registered_at_display),
+            'the confirmation screen prints registered_at_display');
+        });
+
+      T.test('serial numbers are per tournament — A and B both start at 1', function () {
+        // DESIGN.md §39: every counter is scoped to a tournament. A shared counter
+        // would give the second tournament's first player number 4, and every
+        // printed sheet and projector card would be wrong.
+        const a = main();
+        const b = other();
+
+        const firstInB = Suites._register(b.tid);
+        T.assertEqual(firstInB.serial_no, 1,
+          'the first player in tournament B must be number 1 regardless of how many ' +
+          'players tournament A already has');
+
+        const thirdInA = Suites._register(a.tid);
+        T.assertEqual(thirdInA.serial_no, 3,
+          'tournament A carries on from its own counter, unaffected by B');
+      });
+
+      T.test('a serial is never reused after a player is withdrawn', function () {
+        // DESIGN.md §9 / schema §2.3: "Serial stays reserved". Reissuing it puts two
+        // different people on the same number in the printed list and the auction
+        // history, which cannot be untangled afterwards.
+        const t = other();
+        const withdrawn = Suites._register(t.tid);
+        T.assertEqual(withdrawn.serial_no, 2, 'baseline: this is B\'s second player');
+
+        // Phase 1 has no withdraw action (that is Phase 2), so the flag is set
+        // directly. The point of the test is the counter, not the action.
+        const row = Repo.findBy(SHEETS.PLAYERS, 'player_id', withdrawn.player_id);
+        Repo.updateRow(SHEETS.PLAYERS, row._row, { is_withdrawn: true });
+
+        const next = Suites._register(t.tid);
+        T.assertEqual(next.serial_no, 3,
+          'serial 2 belongs to the withdrawn player forever; the next registration ' +
+          'must be 3, not a recycled 2');
+
+        const stillThere = Repo.findBy(SHEETS.PLAYERS, 'player_id', withdrawn.player_id);
+        T.assertEqual(stillThere.serial_no, 2,
+          'the withdrawn player keeps their serial');
+        T.assertEqual(stillThere.is_withdrawn, true, 'and stays flagged as withdrawn');
+      });
+
+      // -----------------------------------------------------------------------
+      // What gets written
+      // -----------------------------------------------------------------------
+
+      T.test('the Players row is written with the contracted starting values', function () {
+        const t = main();
+        const out = Suites._register(t.tid, {
+          name: 'ZZ Defaults Player',
+          role: ENUM.PLAYER_ROLE.BOWLER,
+          style: ENUM.PLAYER_STYLE.LEFT
+        });
+        const p = Repo.findBy(SHEETS.PLAYERS, 'player_id', out.player_id);
+        T.assert(p !== null, 'register returned a player_id with no Players row behind it');
+
+        T.assertEqual(p.payment_status, ENUM.PAYMENT_STATUS.PENDING,
+          'nobody is verified at registration time (DESIGN.md §6.3)');
+        T.assertEqual(p.auction_status, ENUM.AUCTION_STATUS.PENDING, 'auction_status');
+        T.assertEqual(p.times_called, 0,
+          'times_called must be the number 0, not blank — DESIGN.md §6.9 counts on it');
+        T.assertEqual(typeof p.times_called, 'number', 'times_called is a number');
+        T.assertEqual(p.is_withdrawn, false, 'is_withdrawn starts FALSE');
+        T.assertEqual(typeof p.is_withdrawn, 'boolean',
+          'a real boolean — the string "FALSE" is truthy and would hide the player');
+
+        T.assertEqual(p.tournament_id, t.tid, 'the row is scoped to the tournament');
+        T.assertEqual(p.name, 'ZZ Defaults Player', 'name');
+        T.assertEqual(p.role, ENUM.PLAYER_ROLE.BOWLER, 'role');
+        T.assertEqual(p.style, ENUM.PLAYER_STYLE.LEFT, 'style');
+        T.assert(!Util.isBlank(p.photo_file_id), 'the profile photo must be stored');
+        T.assert(!Util.isBlank(p.photo_thumb_url), 'the cached thumbnail URL must be stored');
+        T.assert(String(p.photo_thumb_url).indexOf('drive.google.com/thumbnail') !== -1,
+          'photo_thumb_url must be a Drive thumbnail URL (DESIGN.md §3), got ' +
+          T._fmt(p.photo_thumb_url));
+        T.assert(!isNaN(Date.parse(p.registered_at)),
+          'registered_at must be a parseable UTC instant, got ' + T._fmt(p.registered_at));
+        T.assert(Util.isBlank(p.team_id), 'no team until the auction');
+        T.assertEqual(p.sold_amount, null, 'not sold, so sold_amount is empty, not 0');
+      });
+
+      T.test('every Players row has a matching PENDING Payments row', function () {
+        const t = main();
+        const out = Suites._register(t.tid, { upiRef: 'ZZPAYREF' + T.nextSeq() });
+        const p = Repo.findBy(SHEETS.PLAYERS, 'player_id', out.player_id);
+        const pay = Repo.findBy(SHEETS.PAYMENTS, 'player_id', out.player_id);
+
+        T.assert(pay !== null,
+          'a Players row with no Payments row shows up in the admin queue as ' +
+          'permanently unverifiable (CONTRACTS-PHASE1.md §2)');
+        T.assertEqual(pay.player_id, p.player_id, 'the payment points at the player');
+        T.assertEqual(pay.tournament_id, t.tid, 'and carries the tournament id');
+        T.assertEqual(pay.status, ENUM.PAYMENT_STATUS.PENDING, 'payments start PENDING');
+        T.assertEqual(pay.payment_id.slice(0, ID_PREFIX.PAYMENT.length), ID_PREFIX.PAYMENT,
+          'payment_id prefix');
+        T.assertEqual(pay.amount, t.row.reg_fee,
+          'the amount is copied from reg_fee at submit time, so a later fee change ' +
+          'does not rewrite history');
+        T.assert(!Util.isBlank(pay.screenshot_file_id), 'the screenshot must be stored');
+        T.assert(!isNaN(Date.parse(pay.submitted_at)), 'submitted_at must parse');
+        T.assert(Util.isBlank(pay.verified_by), 'nothing is verified yet');
+        T.assert(Util.isBlank(pay.verified_at), 'and there is no verified_at');
+
+        // The invariant, over every registration this suite has made so far.
+        const paidPlayerIds = {};
+        Repo.readAll(SHEETS.PAYMENTS).forEach(r => { paidPlayerIds[r.player_id] = true; });
+        Repo.readAll(SHEETS.PLAYERS).forEach(r => {
+          if (regTids.indexOf(r.tournament_id) === -1) return;
+          T.assert(paidPlayerIds[r.player_id] === true,
+            'player ' + r.player_id + ' (serial ' + r.serial_no + ') has no Payments ' +
+            'row — the Players row was written before the payment was ready');
+        });
+      });
+
+      T.test('search_blob is lowercase and contains name, role and style', function () {
+        // CONTRACTS-PHASE1.md §3 pins the formula exactly, because Phase 4 search
+        // lowercases the query and does a plain substring match against this column.
+        const t = main();
+        const name = 'ZZ Blob Tester';
+        const role = ENUM.PLAYER_ROLE.ALL_ROUNDER;
+        const style = ENUM.PLAYER_STYLE.LEFT;
+        const out = Suites._register(t.tid, { name: name, role: role, style: style });
+        const p = Repo.findBy(SHEETS.PLAYERS, 'player_id', out.player_id);
+
+        T.assertEqual(p.search_blob, (name + ' ' + role + ' ' + style).toLowerCase(),
+          'search_blob is exactly (name + " " + role + " " + style).toLowerCase()');
+        T.assertEqual(p.search_blob, String(p.search_blob).toLowerCase(),
+          'a single capital letter makes every lowercased query miss this player');
+        ['zz blob tester', 'all_rounder', 'left'].forEach(needle => {
+          T.assert(String(p.search_blob).indexOf(needle) !== -1,
+            'search_blob must contain "' + needle + '", got "' + p.search_blob + '"');
+        });
+      });
+
+      T.test('age_years is computed at the tournament start date and stored', function () {
+        // CONTRACTS-PHASE1.md §3: Util.ageYears(dob, tournament.startDate), and the
+        // result must be 8-70. The fixture start_date is fixed at 2026-09-05 so the
+        // boundary dates below do not move with the real calendar.
+        const t = main();
+        const seeded = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', t.tid);
+        T.assertEqual(seeded.start_date, '2026-09-05',
+          'fixture precondition: the ages below are measured against this date');
+
+        const out = Suites._register(t.tid, { dob: '1998-04-12' });
+        const p = Repo.findBy(SHEETS.PLAYERS, 'player_id', out.player_id);
+        T.assertEqual(p.age_years, 28,
+          'born 12 Apr 1998, measured at the 5 Sep 2026 tournament start');
+        T.assertEqual(p.age_years, Util.ageYears('1998-04-12', seeded.start_date),
+          'age_years must equal Util.ageYears(dob, startDate)');
+        T.assertEqual(typeof p.age_years, 'number', 'age_years is stored as a number');
+
+        // Inclusive boundaries.
+        const eight = Suites._register(t.tid, { dob: '2018-09-05' });
+        T.assertEqual(Repo.findBy(SHEETS.PLAYERS, 'player_id', eight.player_id).age_years, 8,
+          'exactly 8 on the start date is allowed');
+        const seventy = Suites._register(t.tid, { dob: '1956-09-05' });
+        T.assertEqual(Repo.findBy(SHEETS.PLAYERS, 'player_id', seventy.player_id).age_years, 70,
+          'exactly 70 on the start date is allowed');
+
+        T.assertThrows(() => Suites._register(t.tid, { dob: '2018-09-06' }),
+          ERR.VALIDATION_FAILED, 'one day short of 8 must be refused');
+        T.assertThrows(() => Suites._register(t.tid, { dob: '1955-09-04' }),
+          ERR.VALIDATION_FAILED, '71 years old must be refused');
+        T.assertThrows(() => Suites._register(t.tid, { dob: 'not-a-date' }),
+          ERR.VALIDATION_FAILED, 'an unparseable date of birth');
+        T.assertThrows(() => Suites._register(t.tid, { dob: '2026-02-30' }),
+          ERR.VALIDATION_FAILED, 'an impossible day must not roll forward into March');
+      });
+
+      // -----------------------------------------------------------------------
+      // Duplicates
+      // -----------------------------------------------------------------------
+
+      T.test('a duplicate mobile is rejected with the exact DESIGN §11 message',
+        function () {
+          const t = main();
+          const mobile = Suites._freshMobile();
+          Suites._register(t.tid, { mobile: mobile });
+
+          const e = T.assertThrows(() => Suites._register(t.tid, { mobile: mobile }),
+            ERR.DUPLICATE_MOBILE, 'the same mobile twice in one tournament');
+
+          // Verbatim from DESIGN.md §11. It is shown to the player, and
+          // CONTRACTS-PHASE1.md §3 says the server messages are those strings exactly.
+          T.assertEqual(e.message,
+            'A registration already exists for this mobile number. ' +
+            'Please contact the tournament organiser.',
+            'the wording is part of the contract — it tells the player what to do next');
+
+          // Same mobile in a DIFFERENT tournament is fine: uniqueness is per
+          // tournament, not global (DESIGN.md §39).
+          const inOther = Suites._register(other().tid, { mobile: mobile });
+          T.assert(inOther.serial_no > 0,
+            'the same person may register for a different tournament');
+        });
+
+      T.test('a duplicate upi_ref is rejected with DUPLICATE_UPI_REF', function () {
+        const t = main();
+        const ref = 'ZZDUPREF' + T.nextSeq();
+        Suites._register(t.tid, { upiRef: ref });
+
+        const e = T.assertThrows(() => Suites._register(t.tid, { upiRef: ref }),
+          ERR.DUPLICATE_UPI_REF,
+          'one UPI reference is one payment; reusing it is how a single fee gets ' +
+          'claimed by two registrations');
+        T.assertEqual(e.message, 'This UPI reference number has already been used.',
+          'verbatim from DESIGN.md §11');
+      });
+
+      // -----------------------------------------------------------------------
+      // Field validation — CONTRACTS-PHASE1.md §3
+      // -----------------------------------------------------------------------
+
+      T.test('every field rule in the contract table is enforced server-side', function () {
+        const t = main();
+        const before = Repo.count(SHEETS.PLAYERS, { tournament_id: t.tid });
+        const reject = (overrides, why) => {
+          T.assertThrows(() => Suites._register(t.tid, overrides),
+            ERR.VALIDATION_FAILED, why);
+        };
+
+        // mobile — Util.isValidMobileIN
+        reject({ mobile: '12345' }, 'a five-digit mobile');
+        reject({ mobile: '1234567890' }, 'ten digits but a leading 1 is not an Indian mobile');
+        reject({ mobile: '98765432100' }, 'eleven digits');
+        reject({ mobile: '' }, 'a blank mobile');
+
+        // name — 2-60 chars
+        reject({ name: 'Z' }, 'a one-character name');
+        reject({ name: '   ' }, 'whitespace is not a name');
+        reject({ name: 'Z'.repeat(61) }, '61 characters is over the 60-char limit');
+
+        // role / style — must be in the enum
+        reject({ role: 'KEEPER' }, 'WICKET KEEPER is not one of the three roles');
+        reject({ role: '' }, 'a blank role');
+        reject({ style: 'AMBIDEXTROUS' }, 'style is LEFT or RIGHT only');
+        reject({ style: 'left' }, 'the enum is stored uppercase; lowercase must not slip in');
+
+        // images — all three are required
+        reject({ photo: null }, 'a missing profile photo');
+        reject({ photoThumb: null }, 'a missing thumbnail');
+        reject({ screenshot: null }, 'a missing payment screenshot');
+        reject({ screenshot: { data: '', mime: 'image/jpeg', filename: 'x.jpg' } },
+          'an empty screenshot payload');
+
+        // upiRef — 6-35 alphanumeric
+        reject({ upiRef: 'ab123' }, 'five characters is under the 6-char minimum');
+        reject({ upiRef: 'A'.repeat(36) }, '36 characters is over the 35-char maximum');
+        reject({ upiRef: 'ZZ REF 12345' }, 'spaces are not alphanumeric');
+        reject({ upiRef: 'ZZ-REF-12345' }, 'hyphens are not alphanumeric');
+        reject({ upiRef: '' }, 'a blank UPI reference');
+
+        T.assertEqual(Repo.count(SHEETS.PLAYERS, { tournament_id: t.tid }), before,
+          'not one of those rejections may leave a Players row behind');
+      });
+
+      // -----------------------------------------------------------------------
+      // The IST window — the tests that matter (CONTRACTS.md §6a, DESIGN.md §11)
+      // -----------------------------------------------------------------------
+
+      T.test('registration is ACCEPTED all through the closing IST day', function () {
+        // A naive UTC comparison fails BOTH of these. Reg window is 1-31 Aug 2026.
+        //   03:00 IST on 31 Aug = 2026-08-30T21:30Z — UTC still says "the 30th", so a
+        //     deadline-as-UTC-midnight check calls it too early on the last day.
+        //   23:00 IST on 31 Aug = 2026-08-31T17:30Z — a check that closed the window
+        //     at UTC midnight on the 31st lost the whole Indian working day.
+        // Between them they are most of the registrations on deadline night.
+        const t = windowed();
+
+        const early = Suites._withFakeNow('2026-08-30T21:30:00.000Z', function () {
+          return Suites._register(t.tid);
+        });
+        T.assert(early && early.serial_no > 0,
+          '3am IST on the closing day must get through, got ' + T._fmt(early));
+
+        const late = Suites._withFakeNow('2026-08-31T17:30:00.000Z', function () {
+          return Suites._register(t.tid);
+        });
+        T.assert(late && late.serial_no > early.serial_no,
+          '11pm IST on the closing day must get through, got ' + T._fmt(late));
+
+        // 00:00 IST on the opening day is the other edge of the same bug.
+        const opening = Suites._withFakeNow('2026-07-31T18:30:00.000Z', function () {
+          return Suites._register(t.tid);
+        });
+        T.assert(opening && opening.serial_no > 0,
+          'midnight IST on the opening day is inside the window');
+      });
+
+      T.test('registration one second after IST midnight is REJECTED', function () {
+        const t = windowed();
+        // 2026-08-31T18:30:00.000Z is 00:00 IST on 1 Sep. One second later the
+        // window is over. A UTC-midnight check would keep accepting for 5.5 hours.
+        Suites._withFakeNow('2026-08-31T18:30:01.000Z', function () {
+          T.assertThrows(() => Suites._register(t.tid), ERR.REGISTRATION_CLOSED,
+            'one second past IST midnight on the closing day');
+        });
+        Suites._withFakeNow('2026-09-01T04:00:00.000Z', function () {
+          T.assertThrows(() => Suites._register(t.tid), ERR.REGISTRATION_CLOSED,
+            '09:30 IST on the day after — comfortably closed');
+        });
+      });
+
+      T.test('registration before the window opens is REJECTED', function () {
+        const t = windowed();
+        Suites._withFakeNow('2026-07-31T18:29:59.000Z', function () {
+          T.assertThrows(() => Suites._register(t.tid), ERR.REGISTRATION_CLOSED,
+            'one second before 00:00 IST on the opening day');
+        });
+        Suites._withFakeNow('2026-07-01T06:00:00.000Z', function () {
+          T.assertThrows(() => Suites._register(t.tid), ERR.REGISTRATION_CLOSED,
+            'a month early');
+        });
+      });
+
+      T.test('registration against a DRAFT or REG_CLOSED tournament is rejected',
+        function () {
+          // CONTRACTS-PHASE1.md §2 makes registration_open depend on status as well as
+          // the window, and §3 gives the window failure the code REGISTRATION_CLOSED.
+          // It does not separately name the code for "the window is fine but the
+          // status is not", so this accepts either of the two defensible codes and
+          // insists only that nothing is written.
+          const draft = Suites._seedTournament('regdrf', {
+            status: ENUM.TOURNAMENT_STATUS.DRAFT,
+            reg_start: '2020-01-01', reg_end: '2099-12-31'
+          });
+          const closed = Suites._seedTournament('regcls', {
+            status: ENUM.TOURNAMENT_STATUS.REG_CLOSED,
+            reg_start: '2020-01-01', reg_end: '2099-12-31'
+          });
+          regTids.push(draft.tid, closed.tid);
+
+          [['DRAFT', draft], ['REG_CLOSED', closed]].forEach(pair => {
+            const e = T.assertThrows(() => Suites._register(pair[1].tid), null,
+              'a ' + pair[0] + ' tournament must not accept registrations');
+            T.assert(e.code === ERR.REGISTRATION_CLOSED || e.code === ERR.VALIDATION_FAILED,
+              'expected REGISTRATION_CLOSED (or VALIDATION_FAILED) for a ' + pair[0] +
+              ' tournament, got ' + e.code);
+            T.assertEqual(Repo.count(SHEETS.PLAYERS, { tournament_id: pair[1].tid }), 0,
+              'nothing may be written for a ' + pair[0] + ' tournament');
+          });
+        });
+
+      // -----------------------------------------------------------------------
+      // checkMobile
+      // -----------------------------------------------------------------------
+
+      T.test('checkMobile returns {taken} and nothing else', function () {
+        // DESIGN.md §16 risk #4: this endpoint is anonymous. Returning a name, a
+        // serial or a registered_at turns it into a lookup service for anyone who
+        // can guess mobile numbers — and mobile numbers are guessable.
+        const t = main();
+        const free = Suites._freshMobile();
+        const untaken = Suites._call('player.checkMobile',
+          { tournamentId: t.tid, mobile: free }, null);
+        T.assertEqual(untaken, { taken: false },
+          'an unused mobile must return exactly {taken:false}');
+
+        const used = Suites._freshMobile();
+        Suites._register(t.tid, { mobile: used, name: 'ZZ Check Mobile' });
+        const taken = Suites._call('player.checkMobile',
+          { tournamentId: t.tid, mobile: used }, null);
+        T.assertEqual(taken, { taken: true },
+          'a used mobile must return exactly {taken:true} — no name, no serial');
+
+        T.assertEqual(Object.keys(taken), ['taken'],
+          'exactly one key. Present: ' + Object.keys(taken).join(', '));
+        ['name', 'player_id', 'serial_no', 'registered_at', 'payment_status', 'player']
+          .forEach(k => {
+            T.assert(Object.keys(taken).indexOf(k) === -1,
+              'checkMobile leaked "' + k + '"');
+          });
+        T.assert(JSON.stringify(taken).indexOf('ZZ Check Mobile') === -1,
+          'the registered player\'s name must not appear anywhere in the response');
+
+        // Scoped to the tournament, like everything else (DESIGN.md §39).
+        T.assertEqual(Suites._call('player.checkMobile',
+          { tournamentId: other().tid, mobile: used }, null), { taken: false },
+          'a mobile used in one tournament is free in another');
+      });
+
+      // -----------------------------------------------------------------------
+      // Where the files land — DESIGN.md §16 risk #1
+      // -----------------------------------------------------------------------
+
+      T.test('the screenshot goes to the private folder and the photo to the public one',
+        function () {
+          // Risk #1 in DESIGN.md §16, rated High: a Drive link is unauthenticated, so
+          // a payment screenshot in a "anyone with the link" folder is readable by
+          // anyone who ever sees or guesses the id. It must live under private/.
+          const t = main();
+          T.assert(t.folders, 'fixture precondition: the tournament has Drive folders');
+          T.assert(t.folders.playersId !== t.folders.paymentsId,
+            'the public players folder and the private payments folder must be two ' +
+            'different folders');
+
+          const out = Suites._register(t.tid, { name: 'ZZ Folder Split' });
+          const p = Repo.findBy(SHEETS.PLAYERS, 'player_id', out.player_id);
+          const pay = Repo.findBy(SHEETS.PAYMENTS, 'player_id', out.player_id);
+
+          // DriveApp directly: Drive.gs has no "where does this file live" API, and
+          // the whole point of the test is to look at the real parent.
+          const photoParent = Suites._parentFolderId(p.photo_file_id);
+          const shotParent = Suites._parentFolderId(pay.screenshot_file_id);
+
+          T.assertEqual(photoParent, t.folders.playersId,
+            'the profile photo belongs in public/players/ — the projector loads it ' +
+            'straight from a Drive thumbnail URL');
+          T.assertEqual(shotParent, t.folders.paymentsId,
+            'the payment screenshot belongs in private/payments/, but it was written ' +
+            'to ' + shotParent);
+          T.assert(shotParent !== photoParent,
+            'the two images must not share a folder');
+          T.assert(shotParent !== t.folders.publicId && shotParent !== t.folders.galleryId,
+            'the screenshot must be nowhere under public/');
+          T.assertEqual(Suites._parentFolderId(t.folders.paymentsId, true), t.folders.privateId,
+            'payments/ must sit inside private/');
+
+          // And private/ must not be link-shared. Drive.ensureTournamentFolders never
+          // shares it; this catches a future change that does.
+          let access = null;
+          try {
+            access = String(DriveApp.getFolderById(t.folders.privateId).getSharingAccess());
+          } catch (e) {
+            access = 'unreadable: ' + T._errText(e);
+          }
+          T.assert(access !== String(DriveApp.Access.ANYONE_WITH_LINK) &&
+            access !== String(DriveApp.Access.ANYONE),
+            'the private folder must not be link-shared, but its access is ' + access);
+        });
+
+      // -----------------------------------------------------------------------
+      // The lock boundary — DESIGN.md §6.2
+      // -----------------------------------------------------------------------
+
+      T.test('every image upload happens OUTSIDE the script lock', function () {
+        // THE THROUGHPUT TEST.
+        //
+        // DESIGN.md §6.2: uploads take ~2-3 s each. A script lock is global, so
+        // holding it across the uploads caps the whole system at roughly 20
+        // registrations per minute. Outside the lock the critical section is ~200 ms
+        // and the same hardware takes ten times the load. On deadline night that is
+        // the difference between working and not.
+        //
+        // There is no way to observe this from the outside, so the two functions are
+        // wrapped for the duration of the test and the call order is recorded. Both
+        // are plain object properties, and both are restored in a finally.
+        const t = main();
+        const order = [];
+        const realUpload = Drive.uploadImage;
+        const realWithLock = Repo.withLock;
+
+        try {
+          Drive.uploadImage = function () {
+            order.push('upload');
+            return realUpload.apply(Drive, arguments);
+          };
+          Repo.withLock = function () {
+            order.push('lock-enter');
+            try {
+              return realWithLock.apply(Repo, arguments);
+            } finally {
+              order.push('lock-exit');
+            }
+          };
+          Suites._register(t.tid, { name: 'ZZ Lock Boundary' });
+        } finally {
+          Drive.uploadImage = realUpload;
+          Repo.withLock = realWithLock;
+        }
+
+        const uploads = order.filter(x => x === 'upload').length;
+        const firstLock = order.indexOf('lock-enter');
+        const lastUpload = order.lastIndexOf('upload');
+
+        T.assert(uploads >= 3,
+          'expected at least three uploads (photo, thumb, screenshot), saw ' + uploads +
+          '. Call order: ' + order.join(' -> '));
+        T.assert(firstLock !== -1,
+          'player.register never took the script lock. Serial allocation without the ' +
+          'lock hands two simultaneous registrations the same number (DESIGN.md §6.2). ' +
+          'Call order: ' + order.join(' -> '));
+        T.assert(lastUpload < firstLock,
+          'an image upload happened inside the script lock. Every upload must finish ' +
+          'before Repo.withLock is entered — holding a global lock for ~3 s of Drive ' +
+          'I/O caps the system at ~20 registrations a minute and breaks deadline ' +
+          'night (DESIGN.md §6.2). Call order: ' + order.join(' -> '));
+
+        // Say it the other way round too, so the failure message is unambiguous.
+        let inside = false;
+        let uploadsInside = 0;
+        order.forEach(step => {
+          if (step === 'lock-enter') inside = true;
+          else if (step === 'lock-exit') inside = false;
+          else if (step === 'upload' && inside) uploadsInside++;
+        });
+        T.assertEqual(uploadsInside, 0,
+          uploadsInside + ' upload(s) ran between lock-enter and lock-exit. ' +
+          'Call order: ' + order.join(' -> '));
       });
     });
   },
@@ -1889,6 +3118,347 @@ const Suites = {
   // ===========================================================================
 
   /**
+   * @private Look up an action in the real route table.
+   *
+   * Phase 1 handlers are reached this way rather than through the module object,
+   * because CONTRACTS-PHASE1.md §2 pins the ACTION names and CONTRACTS.md §11 pins
+   * the handler signature, while the internal function names are nobody's contract.
+   *
+   * @param {string} action e.g. 'tournament.create'
+   * @return {{auth: (string|!Array<string>), methods: !Array<string>, handler: !Function}}
+   */
+  _route(action) {
+    let routes = null;
+    try {
+      routes = buildRoutes();
+    } catch (e) {
+      T._fail('buildRoutes() threw: ' + T._errText(e));
+    }
+    if (!Object.prototype.hasOwnProperty.call(routes, action)) {
+      T._fail('the action "' + action + '" is not registered. CONTRACTS-PHASE1.md §2 ' +
+        'requires it. Registered actions: ' + Object.keys(routes).sort().join(', '));
+    }
+    const route = routes[action];
+    T.assert(route && typeof route.handler === 'function',
+      'route "' + action + '" has no handler function');
+    T.assert(Array.isArray(route.methods),
+      'route "' + action + '" must declare a methods array (CONTRACTS.md §11)');
+    return route;
+  },
+
+  /**
+   * @private Call an action's handler directly, the way dispatch() would.
+   *
+   * Authentication is dispatch's job, not the handler's, so the session is passed
+   * in ready-made. The route's declared auth level is asserted separately, in the
+   * routing test of each suite.
+   *
+   * @param {string} action
+   * @param {!Object} payload
+   * @param {?Object} session resolved session, or null for a PUBLIC action.
+   * @return {*} whatever the handler returns
+   */
+  _call(action, payload, session) {
+    return Suites._route(action).handler(payload || {}, session || null, null);
+  },
+
+  /**
+   * @private Does a route's auth spec admit this role?
+   *
+   * Code.gs accepts either a role array or one of the strings 'PUBLIC' / 'ANY',
+   * and CONTRACTS.md §11 does not force one spelling, so both are understood here
+   * rather than asserting a literal that would fail for a correct implementation.
+   *
+   * @param {string|!Array<string>} spec the route's `auth` value
+   * @param {string} role an ENUM.USER_ROLE member
+   * @return {boolean}
+   */
+  _authAllows(spec, role) {
+    if (spec === 'ANY') return true;
+    if (spec === 'PUBLIC') return true;
+    if (Array.isArray(spec)) return spec.indexOf(role) !== -1;
+    return String(spec) === role;
+  },
+
+  /**
+   * @private A logged-in ADMIN session, for the actions that need one.
+   * @param {string} tag makes the fixture email unique within the run.
+   * @return {!Object} the resolved session, with `token` attached
+   */
+  _adminSession(tag) {
+    const user = Suites._makeUser(
+      Suites._fixtureEmail(tag), 'ZZ ' + tag, ENUM.USER_ROLE.ADMIN, null);
+    const login = Auth.login(user.email, TEST_FIXTURES.PASSWORD, 'zz-test-agent');
+    const session = Auth.resolve(login.token);
+    if (!session) {
+      T._fail('could not build an ADMIN session: Auth.resolve returned null for a ' +
+        'token that Auth.login had just issued');
+    }
+    // dispatch() leaves the raw token on the session (Code.gs, auth.logout).
+    session.token = login.token;
+    return session;
+  },
+
+  /**
+   * @private A valid `tournament.create` payload. Overrides are applied on top,
+   * including explicit nulls, so a rejection test can spoil exactly one field.
+   * @param {string} tag
+   * @param {Object=} overrides
+   * @return {!Object}
+   */
+  _createPayload(tag, overrides) {
+    const p = {
+      name: 'ZZ Test Tournament ' + tag,
+      description: 'Fixture tournament written by Tests.gs. Safe to delete.',
+      startDate: '2026-09-05',
+      endDate: '2026-09-20',
+      regStart: '2026-08-01',
+      regEnd: '2026-08-31',
+      regFee: 500,
+      upiId: 'zztest@okbank',
+      contactName: 'ZZ Contact',
+      contactMobile: '9876543210',
+      contactEmail: 'zz.contact' + TEST_FIXTURES.EMAIL_DOMAIN,
+      rules: 'Fixture rules. No real tournament uses these.',
+      defaultPurse: 1000000,
+      defaultMaxPlayers: 14,
+      logo: null,
+      qr: null,
+      gallery: []
+    };
+    const o = overrides || {};
+    Object.keys(o).forEach(k => { p[k] = o[k]; });
+    return p;
+  },
+
+  /**
+   * @private Create a tournament through the real action and register its id for
+   * cleanup. The id is minted by the action and does not carry TID_PREFIX, so
+   * T.trackTid is the only thing standing between this row and a permanent
+   * resident of the TEST sheet.
+   * @return {!Object} the action's return value
+   */
+  _createTournament(session, tag, overrides) {
+    const out = Suites._call('tournament.create', Suites._createPayload(tag, overrides), session);
+    if (out && out.tournament_id) T.trackTid(out.tournament_id);
+    return out;
+  },
+
+  /**
+   * @private Write a Tournaments row directly, bypassing tournament.create.
+   *
+   * Used wherever the tournament is scenery rather than the thing under test: it
+   * is faster, it lets a test pin the status and the registration window exactly,
+   * and it keeps the Registration suite from failing for a reason that belongs to
+   * the Tournament suite.
+   *
+   * The id carries TEST_FIXTURES.TID_PREFIX, so the existing cleanup finds it.
+   *
+   * @param {string} tag short, unique within a run; becomes part of the id.
+   * @param {Object=} overrides row fields, plus `withFolders:false` to skip Drive.
+   * @return {{tid:string, slug:string, folders:?Object, row:!Object}}
+   */
+  _seedTournament(tag, overrides) {
+    const o = overrides || {};
+    const tid = TEST_FIXTURES.TID_PREFIX + tag;
+    const slug = 'zz-test-' + tag;
+
+    let folders = null;
+    if (o.withFolders !== false) {
+      folders = Drive.ensureTournamentFolders(tid, slug);
+      Suites._trackFolders(folders);
+    }
+    T._state.cacheTids.push(tid);
+
+    const row = {
+      tournament_id: tid,
+      slug: slug,
+      name: 'ZZ Test ' + tag,
+      description: 'Fixture tournament written by Tests.gs. Safe to delete.',
+      start_date: o.start_date || '2026-09-05',
+      end_date: o.end_date || '2026-09-20',
+      reg_start: (o.reg_start === undefined) ? '2020-01-01' : o.reg_start,
+      reg_end: (o.reg_end === undefined) ? '2099-12-31' : o.reg_end,
+      reg_fee: (o.reg_fee === undefined) ? 500 : o.reg_fee,
+      logo_file_id: '',
+      photo_file_ids: '[]',
+      qr_file_id: '',
+      upi_id: 'zztest@okbank',
+      contact_name: 'ZZ Contact',
+      contact_mobile: '9876543210',
+      contact_email: 'zz.contact' + TEST_FIXTURES.EMAIL_DOMAIN,
+      rules: 'Fixture rules.',
+      status: o.status || ENUM.TOURNAMENT_STATUS.REG_OPEN,
+      drive_folder_id: folders ? folders.rootId : '',
+      next_serial: (o.next_serial === undefined) ? 1 : o.next_serial,
+      default_purse: 1000000,
+      default_max_players: 14,
+      display_token: 'zzdisplaytoken' + tag + Util.uid(ID_PREFIX.LOG).slice(4),
+      created_at: Util.nowIso(),
+      created_by: TEST_FIXTURES.ACTOR
+    };
+
+    const existing = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', tid);
+    if (existing) {
+      // Debris from a run that died before cleanup. Left alone, its Players rows
+      // would make "the first registration is serial 1" fail for the wrong reason.
+      T._purge(SHEETS.PAYMENTS, r => r.tournament_id === tid, []);
+      T._purge(SHEETS.PLAYERS, r => r.tournament_id === tid, []);
+      Repo.updateRow(SHEETS.TOURNAMENTS, existing._row, row);
+    } else {
+      Repo.append(SHEETS.TOURNAMENTS, row);
+    }
+    return { tid: tid, slug: slug, folders: folders, row: row };
+  },
+
+  /**
+   * @private Set a fixture tournament's status without going through setStatus,
+   * so a transition test can start from any state including an illegal one.
+   */
+  _forceStatus(tournamentId, status) {
+    const row = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', tournamentId);
+    if (!row) T._fail('fixture tournament ' + tournamentId + ' has no row');
+    Repo.updateRow(SHEETS.TOURNAMENTS, row._row, { status: status });
+  },
+
+  /**
+   * @private An image field in the CONTRACTS-PHASE1.md §1 transport shape.
+   * @param {string} kind 'png' or 'jpeg'
+   * @param {string} filename
+   * @return {{data:string, mime:string, filename:string}}
+   */
+  _imageField(kind, filename) {
+    const isPng = (kind === 'png');
+    return {
+      data: isPng ? Suites._pngBase64() : Suites._jpegBase64(),
+      mime: isPng ? DRIVE_MIME_PNG : DRIVE_MIME_JPEG,
+      filename: filename
+    };
+  },
+
+  /**
+   * @private A valid Indian mobile number nobody else in this run will use.
+   * @return {string} 10 digits starting with 9
+   */
+  _freshMobile() {
+    return '9' + ('000000000' + T.nextSeq()).slice(-9);
+  },
+
+  /**
+   * @private A valid UPI reference (6-35 alphanumeric) unique within this run.
+   * @return {string}
+   */
+  _freshUpiRef() {
+    return 'ZZTESTUPI' + ('000000' + T.nextSeq()).slice(-6);
+  },
+
+  /**
+   * @private A run-unique suffix made of LETTERS ONLY.
+   *
+   * CONTRACTS-PHASE1.md §3 restricts a player name to letters, spaces, dots and
+   * apostrophes, so a fixture name cannot be disambiguated with a counter digit —
+   * "ZZ Player 7" would be rejected by the very rule under test and every
+   * registration in this suite would fail for the wrong reason.
+   *
+   * @return {string} e.g. "AQ"
+   */
+  _seqLetters() {
+    let n = T.nextSeq();
+    let out = '';
+    do {
+      out = String.fromCharCode(65 + (n % 26)) + out;
+      n = Math.floor(n / 26);
+    } while (n > 0);
+    return out;
+  },
+
+  /**
+   * @private A complete, valid `player.register` payload. Overrides are applied
+   * on top, including explicit nulls, so one field can be spoiled at a time.
+   */
+  _regPayload(tournamentId, overrides) {
+    const p = {
+      tournamentId: tournamentId,
+      name: 'ZZ Player ' + Suites._seqLetters(),
+      dob: '1998-04-12',
+      role: ENUM.PLAYER_ROLE.ALL_ROUNDER,
+      style: ENUM.PLAYER_STYLE.RIGHT,
+      mobile: Suites._freshMobile(),
+      upiRef: Suites._freshUpiRef(),
+      photo: Suites._imageField('jpeg', 'zz-photo.jpg'),
+      photoThumb: Suites._imageField('jpeg', 'zz-thumb.jpg'),
+      screenshot: Suites._imageField('jpeg', 'zz-screenshot.jpg')
+    };
+    const o = overrides || {};
+    Object.keys(o).forEach(k => { p[k] = o[k]; });
+    return p;
+  },
+
+  /** @private Register a player through the real action. */
+  _register(tournamentId, overrides) {
+    return Suites._call('player.register', Suites._regPayload(tournamentId, overrides), null);
+  },
+
+  /**
+   * @private Run `fn` with the clock pinned to an explicit instant.
+   *
+   * The registration window is an IST-day question (CONTRACTS.md §6a) and the two
+   * failure modes only show up between 00:00 and 05:30 IST. A test that used the
+   * real clock would pass at any other hour whether the code was right or wrong,
+   * so the instant has to be chosen, not observed.
+   *
+   * Two seams are patched, because CONTRACTS pins both and an implementation may
+   * use either: Util.nowIso (CONTRACTS.md §1.7 — every timestamp comes from here)
+   * and the default `atIso` of Util.isWithinWindow (CONTRACTS.md §6a rule 2 —
+   * every window check goes through it). An explicit atIso is left alone.
+   *
+   * If a window test fails while the IST suite passes, the likely cause is code
+   * calling `new Date()` directly instead of going through Util.
+   *
+   * Both are plain properties on a plain object and both are restored in a finally.
+   *
+   * @param {string} isoInstant e.g. '2026-08-30T21:30:00.000Z' (03:00 IST on 31 Aug)
+   * @param {function():*} fn
+   * @return {*} whatever fn returns
+   */
+  _withFakeNow(isoInstant, fn) {
+    const realNowIso = Util.nowIso;
+    const realIsWithinWindow = Util.isWithinWindow;
+    Util.nowIso = function () {
+      return isoInstant;
+    };
+    Util.isWithinWindow = function (startIso, endIso, atIso) {
+      const at = (atIso === undefined || atIso === null || atIso === '') ? isoInstant : atIso;
+      return realIsWithinWindow.call(Util, startIso, endIso, at);
+    };
+    try {
+      return fn();
+    } finally {
+      Util.nowIso = realNowIso;
+      Util.isWithinWindow = realIsWithinWindow;
+    }
+  },
+
+  /**
+   * @private The id of the folder a Drive item sits in.
+   *
+   * DriveApp directly, on purpose: Drive.gs has no "where does this live" API and
+   * the whole point of the caller is to look at the real parent, not at what the
+   * code believes it wrote.
+   *
+   * @param {string} id file id, or folder id when isFolder is true
+   * @param {boolean=} isFolder
+   * @return {?string} the first parent's id, or null when there is none
+   */
+  _parentFolderId(id, isFolder) {
+    if (Util.isBlank(id)) return null;
+    const parents = isFolder
+      ? DriveApp.getFolderById(id).getParents()
+      : DriveApp.getFileById(id).getParents();
+    return parents.hasNext() ? parents.next().getId() : null;
+  },
+
+  /**
    * @private A fixture email that is unique per run, so leftovers from an aborted
    * previous run cannot collide with this one. Registered for cleanup.
    * @param {string} tag
@@ -2033,7 +3603,8 @@ function runAllTests() {
  * Subject to the same env guard as runAllTests — there is no "just this one
  * suite" exemption, because every suite writes rows.
  *
- * @param {string} suiteName one of Util, Repo, Auth, Cache, Drive.
+ * @param {string} suiteName one of Util, IST, Tournament, Registration, Repo,
+ *     Auth, Cache, Drive.
  * @return {!Object} {total, passed, failed, elapsedMs, failures}
  */
 function runTest(suiteName) {

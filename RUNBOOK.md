@@ -10,8 +10,9 @@ Assume no prior knowledge of Apps Script or clasp. Follow the numbered steps in 
 2. [Part 2 — The deployment trap (read this)](#part-2--the-deployment-trap-read-this)
 3. [Part 3 — TEST vs PROD](#part-3--test-vs-prod)
 4. [Part 4 — Running the tests](#part-4--running-the-tests)
-5. [Part 5 — Tournament-day checklist](#part-5--tournament-day-checklist)
-6. [Part 6 — Troubleshooting](#part-6--troubleshooting)
+5. [Part 5 — Running a tournament, start to finish (Phase 1)](#part-5--running-a-tournament-start-to-finish-phase-1)
+6. [Part 6 — Tournament-day checklist](#part-6--tournament-day-checklist)
+7. [Part 7 — Troubleshooting](#part-7--troubleshooting)
 
 ---
 
@@ -112,6 +113,22 @@ It seeds these `Config` keys:
 
 **Set `env` to `PROD` on the live sheet.** Open the `Config` tab and check the value. See Part 3 for why this matters.
 
+### 1.7a Add the `frontend_base_url` key
+
+`setup()` does not seed this one, because it cannot know your Pages address until step 1.11. Add it by hand.
+
+1. Open the `Config` tab.
+2. Add a row with key `frontend_base_url`.
+3. Set the value to your GitHub Pages site root, with **no trailing slash**, for example:
+
+```
+https://myclub.github.io/cricket-auction
+```
+
+Why it matters: the registration link and the projector link the admin copies (`registrationUrl` and `displayUrl`, returned by `tournament.create`) are built from this value. If it is unset or blank you get **path-only links** like `/register/TRN_abc` instead of a full `https://...` URL — which look fine in the admin screen but are useless when pasted into WhatsApp.
+
+Come back and do this step after step 1.11 if you do not know the address yet. Nothing else depends on it.
+
 It also creates the Drive root folder `CricketAuction`.
 
 ### 1.8 Run `seedAdmin()`
@@ -159,19 +176,25 @@ https://script.google.com/macros/s/AKfycb.....................abc/exec
 Open `frontend/js/config.js` and set:
 
 ```js
-const API_BASE_URL = 'https://script.google.com/macros/s/AKfycb...../exec';
+API_BASE_URL: 'https://script.google.com/macros/s/AKfycb...../exec',
 ```
 
 Use the `/exec` URL, not the `/dev` one. `/dev` only works while you are logged in as the owner.
 
+Check `BASE_PATH` in the same file while you are there. GitHub Pages project sites are served from a sub-path, so it must match your repo name — `'/cricket-auction'` by default. If you rename the repo, change it here **and** in the copy inside `frontend/404.html`. If you host at a domain root, set it to `''`.
+
 ### 1.11 Create the GitHub repo and enable Pages
 
 1. Create a **public** repo on GitHub (Pages is free on public repos).
-2. Push this repository to it.
+2. Push this repository to it, on the `main` branch.
 3. In the repo, go to **Settings → Pages**.
-4. Under "Build and deployment", set **Source: Deploy from a branch**, **Branch: `main`**, **Folder: `/frontend`**. If your Pages setup does not offer a `/frontend` folder option, either move the frontend to `/docs` and select that, or add a Pages workflow that publishes `frontend/`.
-5. Save. Wait a minute or two, then open the URL GitHub shows, usually `https://<user>.github.io/<repo>/`.
-6. Confirm `frontend/404.html` is present. GitHub Pages returns it for any unknown path, and it redirects into `index.html` so deep links like `/register/TRN_xxx` work.
+4. Under "Build and deployment", set **Source: GitHub Actions**.
+
+   This is not optional. Pages can only serve from the repo root or `/docs` when deploying straight from a branch, and our site lives in `frontend/`. The workflow at `.github/workflows/pages.yml` uploads that folder instead. It runs on every push to `main` that touches `frontend/`, and you can also run it by hand from the **Actions** tab.
+5. Watch the **Actions** tab for the first run. If it fails with "config.js still has the placeholder API_BASE_URL", go back to step 1.10.
+6. Open the URL GitHub shows, usually `https://<user>.github.io/<repo>/`.
+7. Confirm `frontend/404.html` is present. GitHub Pages returns it for any unknown path, and it redirects into `index.html` so deep links like `/register/TRN_xxx` work.
+8. Put that site root into the `frontend_base_url` Config key (step 1.7a).
 
 There is no build step. GitHub Pages serves the files exactly as they are in the repo.
 
@@ -297,43 +320,157 @@ Notes:
 
 ---
 
-## Part 5 — Tournament-day checklist
+## Part 5 — Running a tournament, start to finish (Phase 1)
 
-### The week before
+This is the whole job as it exists today: create a tournament, open registration, share the link, watch players arrive. No developer knowledge needed. Phase 1 stops there — verifying payments, teams and the auction are later phases.
 
-1. **Verify every payment.** Do not leave this to the morning. Only players with `payment_status = VERIFIED` can enter the auction pool. Work the payment queue down to zero PENDING.
-2. **Do a dress rehearsal** with about 20 fake players on the real projector, ideally in the real hall.
-3. **Test the projector at its real resolution.** Assume 1024×768, not 1080p, and assume about 15% of the edges get cut off.
+### 5.1 Sign in as admin
 
-### The morning of
+1. Open your Pages site and go to `/admin/login`, for example `https://myclub.github.io/cricket-auction/admin/login`.
+2. Enter the admin email and password from step 1.8.
+3. You stay signed in for **12 hours**. After that you sign in again. That is normal, not a fault.
 
-4. **Confirm all teams are created.** Check the count, the team names, each team's `purse_total` and each team's `max_players` (12 or 13 — it is per team, not global). Fix them now, not mid-auction.
-5. **Confirm registration is closed** and the payment queue is empty.
+### 5.2 Create the tournament
 
-### Just before you start
+Fill in every field. Here is what each one is for.
 
-6. **Put the tournament into `AUCTION_LIVE`.** Admin → tournament → set status. Until this is set, every sale is rejected with `AUCTION_NOT_LIVE`.
-7. **Open the projector URL:**
-   `https://<your-pages-site>/auction/<tournament-id>/display?k=<display_token>`
-   Then **press `F` for fullscreen**. The projector page has no visible controls. Keyboard only: `F` = fullscreen, `R` = force refresh.
-8. **Pre-warm the image cache.** Leave the projector page open for a couple of minutes before you start so it fetches every verified player's 320px thumbnail into browser cache. Revealing player #27 is then instant instead of a 400 ms wait in front of an audience.
-9. **Check the backup hotspot.** Have a phone hotspot ready and tested. Tether the projector laptop rather than putting it on the venue Wi-Fi. Venue internet failure is the risk most likely to actually bite you.
-10. **Keep a paper sheet.** Serial, player name, team, amount, one line per sale. This is the legal backup and it is what you fall back on if everything electronic dies. Do this regardless of how well the software is working.
+| Field | What it is for | Rule |
+|---|---|---|
+| Name | Shown at the top of the registration page and on the projector | 3–80 characters |
+| Description | Short blurb under the name on the registration page | Free text |
+| Start date / End date | The dates the tournament is played. **Also used to work out each player's age**, which is computed at the start date. | Start must not be after End |
+| Registration start / Registration end | The window in which players may register. IST calendar days — see 5.4. | Start must not be after End |
+| Registration fee | Rupees each player pays. Shown as `₹500` on the page. | Whole rupees, 0 or more |
+| UPI ID | Where the money goes. Shown on the page with a "copy" button, as a fallback for players whose app cannot scan a saved QR image. | Must look like `name@bank` |
+| Contact name / Contact mobile | Shown publicly so a stuck player can call someone | Mobile must be a valid 10-digit Indian number |
+| Contact email | For your records only. **It is never shown to players.** | — |
+| Rules | Long text, shown on the registration page | Free text |
+| Default purse | Pre-fills the purse when you create teams in Phase 3 | Must be more than 0 |
+| Default max players | Pre-fills the squad size when you create teams in Phase 3 | 1 or more |
+| Logo | Tournament logo | Image, optional |
+| UPI QR | The QR code players scan to pay | **PNG — see 5.3** |
+| Gallery | Extra photos for the registration page | May be empty |
 
-### During
+On save the server creates the Drive folder tree, uploads the images, sets the serial counter to 1, and puts the tournament in **`DRAFT`**. Nothing is public yet.
 
-11. Read the confirmation line before every sale. It shows the consequence — for example "Leaves ₹4,75,000 for 3 slots". This one second is your best protection against an extra zero.
-12. An amber banner on a bid is a warning, not a block. Tick and proceed if the amount is genuinely correct.
-13. If the "all teams are full" banner appears, that is the **normal** ending. With 400 players and about 100 slots, roughly 300 players are never called. Admin still clicks CLOSE deliberately.
+### 5.3 Upload the UPI QR as a PNG
 
-### After
+**Save the QR from your bank or UPI app as a PNG and upload that PNG.**
 
-14. `auction.close` sets the status to `AUCTION_CLOSED`. Only an Admin can reopen, and reopening is audited.
-15. Export the three CSVs and open them in Excel before you leave the venue.
+The system deliberately keeps QR images as PNG and never re-encodes them as JPEG. JPEG compression smudges the sharp black-and-white edges a QR code is made of, and a smudged QR can fail to scan on a player's phone. Every other image (photos, logo, gallery) is resized and saved as JPEG, because for a photograph that is invisible and saves 95% of the upload time.
+
+Two practical points:
+
+1. Use a **screenshot or export at a decent size** — at least about 500×500 pixels. A tiny QR blown up on a phone screen scans badly.
+2. Check it yourself. Open the registration page on a phone and scan the QR with a different phone before you share the link.
+
+### 5.4 Set the registration window
+
+Registration dates are **IST calendar days**.
+
+- An end date of **31 August** keeps registration open until **23:59:59 IST on 31 August**.
+- A start date of **1 August** opens it at **00:00:00 IST on 1 August**.
+
+You do not need to add a buffer day. The last day is a whole day.
+
+### 5.5 Open registration
+
+The tournament starts in `DRAFT`. Players cannot register while it is in `DRAFT`, even if today is inside the window.
+
+1. Open the tournament in the admin screen.
+2. Set the status to **`REG_OPEN`**.
+
+The legal status moves are:
+
+```
+DRAFT          -> REG_OPEN
+REG_OPEN       -> REG_CLOSED
+REG_CLOSED     -> REG_OPEN        (reopening is allowed)
+REG_CLOSED     -> AUCTION_LIVE
+REG_OPEN       -> AUCTION_LIVE    (allowed, but it warns that registration is still open)
+AUCTION_LIVE   -> AUCTION_CLOSED
+AUCTION_CLOSED -> AUCTION_LIVE    (admin only, and audited)
+```
+
+Anything else is refused and names both states. Every change is written to the audit log.
+
+### 5.6 Copy and share the registration link
+
+The admin screen shows the link. It looks like:
+
+```
+https://myclub.github.io/cricket-auction/register/TRN_k3m9x1qz7f2a
+```
+
+1. Copy it.
+2. Share it in the club WhatsApp group, or turn it into a QR code for a poster.
+
+If the link starts with `/register/...` instead of `https://...`, the `frontend_base_url` Config key is missing. Go back to step 1.7a.
+
+The link is public on purpose. There is no login for players. It exposes only what `tournament.getPublic` allows: name, description, rules, fee, logo, QR, gallery, UPI ID, contact name and mobile, and the registration dates. It never exposes any player data, any player count, your contact email, the Drive folder, the projector token or any sheet id.
+
+### 5.7 What the player sees
+
+1. Fee and a large QR code, with a **Download QR Code** button and a **copy UPI ID** button.
+2. They pay in their own UPI app and take a screenshot.
+3. They fill in name, date of birth, playing role, batting/bowling style, mobile number and the UPI reference number from their payment.
+4. They pick a profile photo and the payment screenshot. Both are resized in their browser before upload, and a progress bar is shown.
+5. They press submit once — the button disables itself and says "Submitting…".
+6. They get a confirmation screen with their **serial number in very large type** and a "Save as image" button.
+
+If registration is not open, the page shows a "Registration Closed" message instead of the form, and says why — not open yet, closed on a date, or not open for this tournament.
+
+### 5.8 Watch registrations arrive
+
+The admin tournament list shows each tournament with its player count and verified count. In Phase 1 the verified count stays at zero: every registration is written with `payment_status = PENDING`, and payment verification is Phase 2.
+
+You can also open the Google Sheet directly and look at the `Players` and `Payments` tabs. Read only — never edit rows by hand, or the serial counter and the audit trail stop agreeing with each other.
+
+### 5.9 Close registration
+
+When the window ends, set the status to **`REG_CLOSED`**. The window alone already stops new registrations, but setting the status makes it explicit and audited, and it is what you check on the morning of the auction.
 
 ---
 
-## Part 6 — Troubleshooting
+## Part 6 — Tournament-day checklist
+
+### The week before
+
+1. **Confirm registration is closed.** The tournament status should be `REG_CLOSED`, not `REG_OPEN`. A tournament left in `REG_OPEN` will still accept registrations if today is inside the window.
+2. **Export and check the player list.** Pull the player list and read it. Look for duplicate names, obviously wrong dates of birth, missing photos and anyone who paid but never appeared. Fixing this the week before is easy; fixing it in the hall is not.
+3. **Verify every payment.** Do not leave this to the morning. Only players with `payment_status = VERIFIED` can enter the auction pool. Work the payment queue down to zero PENDING.
+4. **Do a dress rehearsal** with about 20 fake players on the real projector, ideally in the real hall.
+5. **Test the projector at its real resolution.** Assume 1024×768, not 1080p, and assume about 15% of the edges get cut off.
+
+### The morning of
+
+6. **Confirm all teams are created.** Check the count, the team names, each team's `purse_total` and each team's `max_players` (12 or 13 — it is per team, not global). Fix them now, not mid-auction.
+7. **Confirm registration is closed** and the payment queue is empty.
+
+### Just before you start
+
+8. **Put the tournament into `AUCTION_LIVE`.** Admin → tournament → set status. Until this is set, every sale is rejected with `AUCTION_NOT_LIVE`.
+9. **Open the projector URL:**
+   `https://<your-pages-site>/auction/<tournament-id>/display?k=<display_token>`
+   Then **press `F` for fullscreen**. The projector page has no visible controls. Keyboard only: `F` = fullscreen, `R` = force refresh.
+10. **Pre-warm the image cache.** Leave the projector page open for a couple of minutes before you start so it fetches every verified player's 320px thumbnail into browser cache. Revealing player #27 is then instant instead of a 400 ms wait in front of an audience.
+11. **Check the backup hotspot.** Have a phone hotspot ready and tested. Tether the projector laptop rather than putting it on the venue Wi-Fi. Venue internet failure is the risk most likely to actually bite you.
+12. **Keep a paper sheet.** Serial, player name, team, amount, one line per sale. This is the legal backup and it is what you fall back on if everything electronic dies. Do this regardless of how well the software is working.
+
+### During
+
+13. Read the confirmation line before every sale. It shows the consequence — for example "Leaves ₹4,75,000 for 3 slots". This one second is your best protection against an extra zero.
+14. An amber banner on a bid is a warning, not a block. Tick and proceed if the amount is genuinely correct.
+15. If the "all teams are full" banner appears, that is the **normal** ending. With 400 players and about 100 slots, roughly 300 players are never called. Admin still clicks CLOSE deliberately.
+
+### After
+
+16. `auction.close` sets the status to `AUCTION_CLOSED`. Only an Admin can reopen, and reopening is audited.
+17. Export the three CSVs and open them in Excel before you leave the venue.
+
+---
+
+## Part 7 — Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -346,11 +483,17 @@ Notes:
 | `SYSTEM_BUSY` returned to the user | Lock contention. Someone else holds the script lock and 20 seconds passed. Usually a registration rush, or two organisers acting at the same instant. | Retry once after 2–5 seconds. If it happens constantly during registration, stagger the deadline instead of announcing one hard hour. |
 | Two organisers both clicked sell, one got `PLAYER_NOT_PENDING` | Working as designed. The lock serialised the writes and the second caller re-read the row and saw it was already sold. | Nothing to fix. Refresh and carry on. |
 | `STALE_STATE` | The tab was acting on an old version of the auction state. | Refresh the page and redo the action. |
+| The registration page shows "Registration Closed" when it should be open | Two possible causes. (1) The tournament status is still `DRAFT`. The window alone is not enough — status must be `REG_OPEN`. (2) The window dates are wrong: `reg_start` is in the future or `reg_end` is in the past. | Open the tournament in the admin screen. Set the status to `REG_OPEN`. Check `reg_start` and `reg_end`. Remember these are **IST calendar days** — an end date of 31 August runs to 23:59:59 IST on the 31st, so a page that closed at 05:30 that morning means a date was compared as UTC somewhere. |
+| Photo upload fails, or takes 30+ seconds | The image is too large and the browser-side resize is not running, so the full 4 MB phone photo is being uploaded. Usual causes: a JavaScript error stopped `js/image.js` loading, or the browser blocks `<canvas>` reads (some privacy modes and older Safari). | Open the browser console on the registration page and look for an error from `image.js`. A working resize turns a 4 MB photo into 100–200 KB. As a stop-gap, ask the player to pick a smaller photo — the server rejects anything over 5 MB decoded (`max_image_bytes`). Also check `Drive.uploadImage` did not reject the mime type: only `image/jpeg` and `image/png` are accepted. |
+| Player sees "A registration already exists for this mobile number" | That mobile number is already used in this tournament. Mobile numbers are unique per tournament (`DUPLICATE_MOBILE`). Either they registered already, or two people are sharing one phone number. | Check the `Players` tab for that number. If it is a genuine second person, they need their own number. If it is a mistake or a withdrawn entry, an admin has to sort it out on the sheet side — there is no self-service fix. The form keeps every field filled in after this error, so the player only has to change the number, not re-pick their photos. |
+| The QR code will not scan | The QR was uploaded in a format that got re-encoded as JPEG, or the source image was too low resolution to start with. | Re-upload the QR as a **PNG** at 500×500 pixels or larger. PNG is kept as PNG on purpose — see Part 5.3. Then scan it yourself from the live registration page with a second phone before sharing the link again. |
+| The registration link gives a GitHub 404 | Three possible causes. (1) `frontend/404.html` is missing, so Pages cannot bounce the deep link into `index.html`. (2) Pages **Source** is not set to "GitHub Actions", so `frontend/` is not being published at all. (3) `BASE_PATH` in `frontend/js/config.js` does not match the repo name, so the bounce lands on a path that does not exist. | Confirm `404.html` exists. Set **Settings → Pages → Source: GitHub Actions** and check the run in the **Actions** tab. Then confirm `BASE_PATH` matches the repo name, in **both** `frontend/js/config.js` and the copy inside `frontend/404.html`. |
+| The registration link the admin copies starts with `/register/...` instead of `https://...` | The `frontend_base_url` key is missing or blank in the `Config` tab, so the server can only build a path, not a full URL. | Add `frontend_base_url` to the `Config` tab, set to your Pages site root with no trailing slash. See step 1.7a. |
+| The admin is signed out again and again | Sessions last **12 hours** (`session_hours`). A session started yesterday evening is gone this morning. | Sign in again. This is expected behaviour, not a bug. If it happens within a few minutes rather than hours, check that the browser is not clearing `localStorage` — the token is stored under `ca.session.token`. |
 | Player photos show as broken images on the dashboard or projector | The `public/` folder sharing was never applied, so `drive.google.com/thumbnail?id=...` returns nothing to an anonymous browser. | Open Drive, find `CricketAuction/<tournament>/public/`, set sharing to **Anyone with the link → Viewer**. It propagates to files inside. Then hard-refresh. `Drive.setPublicRead()` does this in code; if a folder was created by hand it will have been missed. |
 | Payment screenshots do not load for the admin | Correct behaviour if you tried a Drive link — `private/` is never shared. | Screenshots only reach the browser through the `payment.getScreenshot` action, which requires an admin token and returns base64. Make sure you are logged in as ADMIN. |
 | `setup()` throws, or cannot find the spreadsheet | The Apps Script project is **not bound** to the Sheet. A standalone script has no active spreadsheet. | Delete the standalone project. Open the Sheet, then **Extensions → Apps Script**, and `clasp push` into that new script ID. Update `.clasp.json`. |
 | `setup()` throws on the very first run only | Scopes were never authorised. The first run of anything touching Sheets or Drive needs consent. | Run `setup` from the editor, click **Review permissions**, then **Advanced → Go to (project) (unsafe) → Allow**. Run it again. |
 | `runAllTests()` refuses to start | The `Config` tab's `env` value is not `TEST`. This is the interlock from Part 3. | Confirm you opened the **TEST** project. If you did, set `env` to `TEST` in that sheet's `Config` tab. Never change PROD's `env` to make tests run. |
 | Uploads start failing partway through registration | Drive storage full. 15 GB is shared with Gmail and Photos. | This is why step 1.1 says use a dedicated account. Clear space, or move to a dedicated account before go-live. |
-| Deep links like `/register/TRN_xxx` give a GitHub 404 | `frontend/404.html` is missing, or Pages is serving from the wrong folder. | Confirm `404.html` exists and redirects into `index.html`, and that Pages is publishing the `frontend/` folder. |
 | The projector froze on a plausible-looking screen | Polling failed and backed off. There should be an amber "reconnecting" dot. | Check the network, then press `R` on the projector to force a refresh. State lives on the server, so nothing is lost. |

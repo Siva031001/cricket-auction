@@ -47,7 +47,16 @@
 ================================================================================
 -->
 
+<!--
+  Stylesheets, in cascade order. app.css owns the tokens, the mobile-first
+  base and the projector theme, plus every shared component class; the two
+  page stylesheets may only override, never redefine (CONTRACTS-PHASE1.md §4).
+  A page stylesheet that has not been written yet simply 404s: the app still
+  renders, it just loses that page's cosmetic layer.
+-->
 <link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/register.css">
+<link rel="stylesheet" href="css/admin.css">
 </head>
 <body data-route="boot">
 
@@ -60,21 +69,48 @@
 
   <noscript>
     <div class="banner banner--error" role="alert">
+      <span class="banner__mark" aria-hidden="true">⚠</span>
       <strong>JavaScript is required.</strong>
       This page needs JavaScript to load tournament data. Please turn it on and reload.
     </div>
   </noscript>
 
   <!--
-    Load order matters. These are plain globals, not modules:
-      config.js  defines CONFIG
-      api.js     uses CONFIG
-      router.js  uses CONFIG
-      app.js     uses CONFIG, API and Router, and boots on DOMContentLoaded
+    ==========================================================================
+    LOAD ORDER. These are plain globals, not ES modules.
+
+    Every tag carries `defer`, so the browser downloads them in parallel but
+    still runs them strictly in the order written here, after the HTML is
+    parsed and before DOMContentLoaded. app.js boots on DOMContentLoaded, so
+    it is guaranteed that everything above it has already run.
+
+    Dependency order, top to bottom:
+
+      1. config.js               CONFIG          depends on nothing
+      2. api.js                  API             uses CONFIG
+      3. image.js                ImageTool       uses nothing (canvas only)
+      4. ui.js                   UI              uses nothing (DOM only)
+      5. router.js               Router          uses CONFIG
+      6. pages/register.js       RegisterPage    uses API, UI, ImageTool, Router
+      7. pages/admin-login.js    AdminLoginPage  uses API, UI, Router
+      8. pages/admin-tournament.js AdminTournamentPage
+                                                 uses API, UI, ImageTool, Router
+      9. app.js                  App             uses all of the above; LAST
+
+    A page file that fails to load does NOT break the app. app.js looks its
+    global up by name at render time and shows a readable "screen failed to
+    load" panel instead of throwing and leaving a blank white page. A blank
+    page at a venue cannot be diagnosed; a message can.
+    ==========================================================================
   -->
-  <script src="js/config.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/router.js"></script>
-  <script src="js/app.js"></script>
+  <script defer src="js/config.js"></script>
+  <script defer src="js/api.js"></script>
+  <script defer src="js/image.js"></script>
+  <script defer src="js/ui.js"></script>
+  <script defer src="js/router.js"></script>
+  <script defer src="js/pages/register.js"></script>
+  <script defer src="js/pages/admin-login.js"></script>
+  <script defer src="js/pages/admin-tournament.js"></script>
+  <script defer src="js/app.js"></script>
 </body>
 </html>

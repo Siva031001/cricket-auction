@@ -362,7 +362,9 @@ function rebuildCounters(tournamentId)  // recompute Teams.purse_used / players_
 
 `setup()` must be safe to run repeatedly: create a tab only if missing, rewrite the header row always (so a schema change is a re-run), never touch data rows.
 
-Config keys seeded: `env` (`TEST` or `PROD`), `pepper` (generated once, never overwritten if present), `max_image_bytes` (5242880), `poll_interval_ms` (2000), `session_hours` (12), `lock_wait_ms` (20000).
+Config keys seeded: `env` (`TEST` or `PROD`), `pepper` (generated once, never overwritten if present), `max_image_bytes` (5242880), `poll_interval_ms` (2000), `session_hours` (12), `lock_wait_ms` (20000), `frontend_base_url` (seeded empty).
+
+`frontend_base_url` is the GitHub Pages site root with no trailing slash. `setup()` runs before the site exists, so it is seeded empty and filled in by hand. `tournament.create` builds `registrationUrl` and `displayUrl` from it; while blank, those come back as bare paths that cannot be shared.
 
 ---
 

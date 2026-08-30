@@ -1,11 +1,14 @@
 /* =============================================================================
-   app.css — the whole stylesheet. Two jobs, nothing else:
+   app.css — the shared stylesheet. Three jobs, nothing else:
 
      (a) A mobile-first base for the registration and admin routes.
          DESIGN.md §12 (§49): single column, tap targets >= 48px, big form
          fields, readable at arm's length on a phone, obvious errors.
 
-     (b) A projector theme, scoped to the display route only.
+     (b) The shared component vocabulary every page and every UI.* helper
+         draws from (CONTRACTS-PHASE1.md §4). See "Ownership" below.
+
+     (c) A projector theme, scoped to the display route only.
          DESIGN.md §8 (§19/§50): near-black #0B0F14, near-white text,
          contrast >= 12:1, fluid type via clamp(), and a safe-area margin
          because a venue projector crops roughly 15% off the edges.
@@ -13,17 +16,74 @@
    System font stacks only. No @font-face, no @import, no CDN. A font that
    fails to download at the venue is a font that ruins the auction.
 
+   -----------------------------------------------------------------------
+   OWNERSHIP — read this before adding a class anywhere.
+
+   Owned HERE, shared by every page. Do NOT redefine these in another
+   stylesheet; override a property if you must, but keep the name and the
+   meaning:
+
+     layout        .app  .panel  .panel--wide  .panel__title
+                   .panel__subtitle  .panel__note
+                   .card  .card__title  .card__body
+                   .page-head  .page-head__title  .page-head__actions
+                   .toolbar  .stack  .stack--tight  .row  .divider
+     messages      .banner  .banner--error/--success/--info/--warning
+                   .banner__mark  .banner__title
+                   .form-error  .field__error  .empty
+     forms         .form  .form__section  .field  .field__label
+                   .field__label-mark  .field__required  .field__hint
+                   .field__error  .field--invalid  .field--file
+                   .input  .input--file  .select  .textarea  .choice
+                   .file  .file__button  .file__name
+                   .thumb  .thumb__img  .thumb__remove
+     buttons       .btn  .btn--primary (= default)  .btn--secondary
+                   .btn--danger  .btn--ghost  .btn--link  .btn--small
+                   .btn--auto  .btn--busy  .btn-row
+     feedback      .spinner  .spinner__mark  .spinner__ring  .spinner__label
+                   .progress  .progress__bar  .progress__fill
+                   .progress__label
+                   .dialog  .dialog--fallback  .dialog__box  .dialog__title
+                   .dialog__body  .dialog__actions
+     data          .table  .table__wrap  .table th/td  .table--compact
+                   .is-numeric
+                   .kv  .badge  .code  .status  .status--pending/--sold/--unsold
+     chrome        .route-nav  .route-nav__list  .route-nav__link
+                   .visually-hidden  .reveal
+     projector     everything under body[data-route="display"]
+
+   This list is the same set js/ui.js declares in its own header comment.
+   If the two ever disagree, ui.js is describing what it emits and this file
+   is describing what exists — reconcile, do not fork.
+
+   Owned by css/register.css — anything only the registration page needs:
+   the QR block, the payment step, the big serial-number confirmation card,
+   the "save as image" surface, and any register-only tuning of the shared
+   classes above (scope those under body[data-route="register"]).
+
+   Owned by css/admin.css — the tournament list and the create/edit form:
+   the tournament row layout, count chips, the login card, and any
+   admin-only tuning (scope under body[data-route="admin-login"] or
+   body[data-route="admin-dashboard"]).
+
+   Rule of thumb: if a second page would plausibly want it, it belongs
+   here. Later phases must reuse these names rather than invent parallel
+   ones — two vocabularies for the same button is how a stylesheet rots.
+   -----------------------------------------------------------------------
+
    Contents
      1. Design tokens
      2. Reset and base
-     3. Layout: panels, banners
+     3. Layout: panels, cards, banners, toolbars
      4. Typography helpers
      5. Forms and buttons (mobile-first, 48px minimum)
      6. Errors
      7. Status pills — colour + word + shape, never colour alone
-     8. Phase 0 placeholder chrome
-     9. Projector theme, scoped to [data-route="display"]
-    10. Accessibility preferences
+     8. Feedback: spinner, progress, dialog
+     9. Data: tables, badges, code, empty states
+    10. Landing chrome
+    11. Projector theme, scoped to [data-route="display"]
+    12. Accessibility preferences
    ========================================================================== */
 
 
@@ -65,6 +125,20 @@
   --accent-ink:    #FFFFFF;
   --danger:        #B3261E;   /* on white: ~6.4:1 */
   --danger-bg:     #FDECEA;
+  --danger-ink:    #FFFFFF;   /* text on a solid --danger fill: ~6.4:1 */
+
+  /* Message colours. Each one is paired with a glyph in sections 3 and 6,
+     so the meaning never depends on the colour alone (DESIGN.md §8/§51). */
+  --success:       #146C43;   /* on white: ~5.4:1 */
+  --success-bg:    #E7F5EC;
+  --info:          #0F5FA6;   /* same hue as --accent */
+  --info-bg:       #E8F1F9;
+  --warning:       #8A5300;   /* on white: ~5.5:1; darker than the amber pill,
+                                 which only ever sits on a dark fill */
+  --warning-bg:    #FFF4E0;
+
+  /* Scrim behind a modal dialog. */
+  --scrim:         rgba(9, 15, 21, 0.62);
 
   /* --- Projector theme, section 9 -------------------------------------- */
   --proj-bg:       #0B0F14;   /* near-black, DESIGN.md §8 */
@@ -149,7 +223,6 @@ a {
 /* -----------------------------------------------------------------------
    3. Layout — single column, always. DESIGN.md §12.
    -------------------------------------------------------------------- */
-
 .app {
   /* Respect the notch / home indicator on phones. */
   padding:
@@ -193,6 +266,84 @@ a {
   color: var(--ink-muted);
 }
 
+/* A panel that needs more width than a phone form: the admin tournament
+   list, for example. Still centred, still one column on a phone. */
+.panel--wide { max-width: 60rem; }
+
+/* Card: a panel-like block that lives INSIDE a panel. One tournament, one
+   summary, one uploaded image. Never nest a card in a card. */
+.card {
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.card + .card { margin-top: var(--space-3); }
+
+.card__title {
+  margin: 0 0 var(--space-1);
+  font-size: 1.125rem;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.card__body { margin: 0; color: var(--ink-muted); }
+
+/* Screen header: title on the left, one or two actions on the right.
+   Stacks on a phone so the action keeps its full 48px width. */
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.page-head__title {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.25;
+  font-weight: 700;
+}
+
+.page-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* A row of controls above a list: search box, filter, refresh. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+
+.toolbar > * { flex: 1 1 12rem; }
+
+/* Vertical rhythm helper, so pages stop inventing their own margins. */
+.stack > * + * { margin-top: var(--space-4); }
+.stack--tight > * + * { margin-top: var(--space-2); }
+
+/* Horizontal group that wraps rather than overflowing a narrow phone. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.divider {
+  height: 1px;
+  margin: var(--space-5) 0;
+  border: 0;
+  background: var(--line);
+}
+
 /* Full-width message strip: setup warning, offline notice, noscript. */
 .banner {
   padding: var(--space-3) var(--space-4);
@@ -201,10 +352,51 @@ a {
   line-height: 1.45;
 }
 
+/* Every variant carries a glyph as well as a colour. A washed-out phone
+   screen in sunlight, greyscale, and red-green colour blindness all have
+   to survive this (DESIGN.md §51). UI.banner() emits the glyph as an
+   aria-hidden .banner__mark span followed by a .visually-hidden word, so
+   the meaning reaches a screen reader too. */
+.banner__mark {
+  margin-right: var(--space-2);
+  font-weight: 700;
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+.banner__title { font-weight: 700; }
+
 .banner--error {
   background: var(--danger-bg);
   border-bottom-color: var(--danger);
   color: var(--danger);
+}
+
+.banner--success {
+  background: var(--success-bg);
+  border-bottom-color: var(--success);
+  color: var(--success);
+}
+
+.banner--info {
+  background: var(--info-bg);
+  border-bottom-color: var(--info);
+  color: var(--info);
+}
+
+.banner--warning {
+  background: var(--warning-bg);
+  border-bottom-color: var(--warning);
+  color: var(--warning);
+}
+
+/* A banner rendered inside a panel rather than across the top of the page
+   still needs to look deliberate. */
+.panel > .banner,
+.card > .banner {
+  margin-bottom: var(--space-4);
+  border: 2px solid currentColor;
+  border-radius: var(--radius);
 }
 
 
@@ -238,12 +430,71 @@ a {
       Every interactive element is at least 48px tall.
    -------------------------------------------------------------------- */
 
+/* The form element itself. One question block under another, nothing
+   side by side — DESIGN.md §12 is explicit that this stays single column
+   even on a desktop, because the desktop is not where it gets used. */
+.form { margin: 0; }
+
+.form__section { margin-bottom: var(--space-6); }
+
 .field { margin-bottom: var(--space-5); }
 
 .field__label {
   display: block;
   margin-bottom: var(--space-2);
   font-weight: 600;
+}
+
+/* "Required" as a word, not a red asterisk nobody can decode. */
+.field__label-mark {
+  margin-left: var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* UI.field() emits .field__required — the "*" after a required label. It is
+   aria-hidden there and paired with a visually-hidden word, so the asterisk
+   is decoration and the meaning still reaches a screen reader. */
+.field__required {
+  margin-left: 0.25em;
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* A file-picker row. The native control is kept (it is the only thing that
+   opens the camera reliably on Android and iOS) so it must hit 48px itself. */
+.field--file .input,
+.input--file {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-3);
+  border: 2px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+/* The button half of the native control, where the browser exposes it. */
+.input--file::file-selector-button {
+  min-height: calc(var(--tap) - 1.5rem);
+  margin-right: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .field__hint {
@@ -314,15 +565,168 @@ a {
 
 .btn + .btn { margin-top: var(--space-3); }
 
+/* The default .btn IS the primary button; the modifier exists so page code
+   can be explicit without a second rule. */
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
 .btn--secondary {
   background: var(--surface);
   color: var(--accent);
   border-color: var(--line-strong);
 }
 
+/* Destructive: remove a photo, close registration, delete a draft. Never
+   the only affordance — always pair it with a confirm dialog. */
+.btn--danger {
+  background: var(--danger);
+  color: var(--danger-ink);
+  border-color: transparent;
+}
+
+/* Low-emphasis action inside a card or table row. */
+.btn--ghost {
+  background: transparent;
+  color: var(--accent);
+  border-color: transparent;
+}
+
+/* Looks like a link, still 48px tall so it can be tapped. */
+.btn--link {
+  width: auto;
+  min-height: var(--tap);
+  padding: var(--space-2) 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Shrink-to-fit, for a row of secondary actions. Height never shrinks:
+   48px is a floor, not a default (DESIGN.md §12). */
+.btn--auto,
+.btn--small { width: auto; }
+
+.btn--small {
+  padding: var(--space-2) var(--space-4);
+  font-size: 1rem;
+}
+
+/* Pressed and waiting. UI.button flips this on, swaps the label to the
+   busy label, and sets disabled — CONTRACTS-PHASE1.md §5.1, the single
+   most common cause of duplicate registrations. The word carries the
+   meaning; the spinner is decoration on top of it. */
+.btn--busy {
+  cursor: progress;
+  opacity: 0.85;
+}
+
+.btn--busy::before {
+  content: "";
+  width: 1em;
+  height: 1em;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: ca-spin 700ms linear infinite;
+}
+
 .btn[disabled], .btn[aria-disabled="true"] {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* Buttons side by side (Cancel / Save). Overrides the stacked margin. */
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.btn-row .btn { flex: 1 1 12rem; margin-top: 0; }
+
+/* File pickers. The native control is unusable on a phone, so the real
+   <input type="file"> is hidden behind a <label class="file__button">
+   that looks like a button. The input must stay focusable — display:none
+   would take it out of the tab order — hence the clipping. */
+.file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.file input[type="file"] {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+}
+
+.file__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  padding: var(--space-3) var(--space-5);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.file input[type="file"]:focus-visible + .file__button {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.file__name {
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+/* Chosen-image preview. CONTRACTS-PHASE1.md §5.7: a thumbnail appears as
+   soon as a file is picked, so nobody uploads the wrong photo twice. */
+.thumb {
+  position: relative;
+  display: inline-block;
+  width: 96px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.thumb__img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+
+.thumb__remove {
+  position: absolute;
+  top: 0; right: 0;
+  width: var(--tap);
+  height: var(--tap);
+  border: 0;
+  background: rgba(9, 15, 21, 0.72);
+  color: #FFFFFF;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 
 /* Checkbox / radio rows still need a 48px hit area even though the control
@@ -436,7 +840,273 @@ a {
 
 
 /* -----------------------------------------------------------------------
-   8. Phase 0 placeholder chrome. Delete once real screens land.
+   8. Feedback — spinner, progress, dialog.
+
+      Every one of these has a text label as well as a visual. A spinner
+      with no words is indistinguishable from a frozen page, and a frozen
+      page is what makes someone press Submit a second time.
+   -------------------------------------------------------------------- */
+
+@keyframes ca-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* A dot cannot show rotation, so the glyph spinner pulses instead. */
+@keyframes ca-pulse {
+  0%, 100% { opacity: 1;    transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.7); }
+}
+
+/* UI.spinner(label) emits:
+     <div class="spinner" role="status" aria-live="polite">
+       <span class="spinner__mark" aria-hidden="true">●</span>
+       <span class="spinner__label">Loading…</span>
+     </div>
+   .spinner__ring is the same thing drawn as a CSS ring, for callers that
+   build their own. Both are decoration: the label is the real signal. */
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  color: var(--ink-muted);
+}
+
+.spinner__mark {
+  flex: 0 0 auto;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--accent);
+  animation: ca-pulse 900ms ease-in-out infinite;
+}
+
+.spinner__ring {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ca-spin 800ms linear infinite;
+}
+
+.spinner__label { font-weight: 600; }
+
+/* UI.progress() -> {el, set(pct), done()}.
+   CONTRACTS-PHASE1.md §5.2 / DESIGN.md §12: on 3G a 150 KB upload takes
+   seconds and silence makes people submit twice. The percentage is shown
+   as text as well, because a bar that has not moved for two seconds looks
+   identical to a bar that is stuck. */
+.progress {
+  margin: var(--space-4) 0;
+}
+
+.progress__bar {
+  display: block;
+  width: 100%;
+  height: 12px;
+  /* UI.progress() uses a real <progress max=100>. appearance:none is what
+     lets the pseudo-elements below be styled at all in WebKit/Blink. */
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--accent);          /* Edge legacy and forced-colors fallback */
+  overflow: hidden;
+}
+
+.progress__bar::-webkit-progress-bar { background: var(--bg); }
+.progress__bar::-webkit-progress-value { background: var(--accent); }
+.progress__bar::-moz-progress-bar { background: var(--accent); }
+
+.progress__fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 200ms linear;
+}
+
+.progress__label {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* UI.confirmDialog({title, body, confirmLabel}) -> Promise<boolean>.
+   Rendered as a native <dialog class="dialog"> where showModal() exists,
+   and as <div class="dialog dialog--fallback" role="dialog"> where it does
+   not. Both are styled here.
+
+   CAREFUL: author styles beat the UA rule `dialog:not([open]){display:none}`
+   regardless of specificity, so a blanket `.dialog{display:flex}` would make
+   an unopened <dialog> visible. Hence the explicit [open] split below. */
+.dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  /* The UA gives <dialog> auto margins and fit-content sizing; undo all of
+     it so the element itself can be the full-screen scrim. */
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  align-items: flex-end;          /* sheet from the bottom on a phone: the
+                                     thumb is already down there */
+  justify-content: center;
+  background: var(--scrim);
+  color: var(--ink);
+}
+
+.dialog[open],
+.dialog--fallback { display: flex; }
+
+dialog.dialog:not([open]) { display: none; }
+
+.dialog::backdrop { background: var(--scrim); }
+
+.dialog[hidden] { display: none; }
+
+.dialog__box {
+  width: 100%;
+  max-width: 34rem;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: var(--space-5);
+  padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+@media (min-width: 40rem) {
+  .dialog { align-items: center; padding: var(--space-4); }
+  .dialog__box { border-radius: var(--radius); }
+}
+
+.dialog__title {
+  margin: 0 0 var(--space-2);
+  font-size: 1.25rem;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.dialog__body { margin: 0 0 var(--space-5); color: var(--ink-muted); }
+
+.dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.dialog__actions .btn { flex: 1 1 12rem; margin-top: 0; }
+
+
+/* -----------------------------------------------------------------------
+   9. Data — tables, badges, code, empty states.
+
+      A table is a desktop shape. On a phone .table__wrap scrolls it
+      sideways rather than crushing the columns, and the first column
+      stays wide enough to identify the row.
+   -------------------------------------------------------------------- */
+
+.table__wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.table caption {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  font-weight: 700;
+  color: var(--ink-muted);
+}
+
+.table th,
+.table td {
+  /* 48px rows: these get tapped, not just read. */
+  height: var(--tap);
+  padding: var(--space-2) var(--space-4);
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.table th {
+  background: var(--bg);
+  font-weight: 700;
+  color: var(--ink-muted);
+  position: sticky;
+  top: 0;
+}
+
+.table tbody tr:last-child td { border-bottom: 0; }
+
+.table td.is-numeric,
+.table th.is-numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table--compact th,
+.table--compact td { height: auto; padding: var(--space-2) var(--space-3); }
+
+/* Small count or label chip. Neutral by default; the status pill in
+   section 7 is the one that carries meaning. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.2em 0.7em;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* A registration URL, a UPI id, a tournament id: monospace, selectable,
+   and allowed to wrap anywhere because these have no spaces in them. */
+.code {
+  display: block;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* "No tournaments yet." Never leave a blank region — a blank region reads
+   as a failed load. */
+.empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--ink-muted);
+}
+
+
+/* -----------------------------------------------------------------------
+   10. Landing chrome — the short link list on '/' only.
    -------------------------------------------------------------------- */
 
 .route-nav__list {
@@ -455,7 +1125,7 @@ a {
 
 
 /* -----------------------------------------------------------------------
-   9. Projector theme — scoped to the display route ONLY.
+   11. Projector theme — scoped to the display route ONLY.
       app.js sets <body data-route="display"> for /auction/:id/display, so
       none of this can leak into the phone screens.
       DESIGN.md §8 (§19/§50).
@@ -584,7 +1254,7 @@ body[data-route="display"] .reveal {
 
 
 /* -----------------------------------------------------------------------
-   10. Accessibility preferences
+   12. Accessibility preferences
    -------------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
@@ -594,17 +1264,33 @@ body[data-route="display"] .reveal {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+
+  /* Exception: a busy indicator that does not move is a frozen page, and a
+     page that looks frozen gets its submit button pressed again. Keep these
+     turning, just slowly enough not to be distracting. */
+  .spinner__ring,
+  .spinner__mark,
+  .btn--busy::before {
+    animation-duration: 1600ms !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 /* Windows High Contrast / forced-colors: let the OS win, but keep the pill
    shape and word, which is exactly why they exist. */
 @media (forced-colors: active) {
-  .status { border: 2px solid CanvasText; }
-  .btn    { border: 2px solid ButtonText; }
+  .status  { border: 2px solid CanvasText; }
+  .btn     { border: 2px solid ButtonText; }
+  .badge   { border: 1px solid CanvasText; }
+  .banner  { border: 1px solid CanvasText; }
+  .thumb   { border: 1px solid CanvasText; }
+  .file__button { border: 2px solid ButtonText; }
+  .progress__bar { border: 1px solid CanvasText; }
+  .dialog__box   { border: 2px solid CanvasText; }
 }
 
 @media print {
-  .route-nav, .banner { display: none; }
+  .route-nav, .banner, .toolbar, .btn, .dialog { display: none; }
   body { background: #FFFFFF; color: #000000; }
-  .panel { border: 0; }
+  .panel, .card, .table__wrap { border: 0; }
 }

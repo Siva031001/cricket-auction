@@ -15,7 +15,9 @@
     "runAllTests(), and only against a sheet whose Config env key is TEST."
   ],
   "scripts": {
-    "push": "clasp push",
+    "check": "node tools/check.js",
+    "test": "node tools/check.js",
+    "push": "npm run check && clasp push",
     "pull": "clasp pull",
     "open": "clasp open",
     "deploy": "clasp push && clasp deploy --deploymentId",

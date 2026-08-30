@@ -92,7 +92,17 @@ const SetupUtil = {
       { key: 'max_image_bytes', value: String(SetupUtil.def('max_image_bytes', 5242880)) },
       { key: 'poll_interval_ms', value: String(SetupUtil.def('poll_interval_ms', 2000)) },
       { key: 'session_hours', value: String(SetupUtil.def('session_hours', 12)) },
-      { key: 'lock_wait_ms', value: String(SetupUtil.def('lock_wait_ms', 20000)) }
+      { key: 'lock_wait_ms', value: String(SetupUtil.def('lock_wait_ms', 20000)) },
+
+      // Root URL of the GitHub Pages site, no trailing slash, e.g.
+      // https://someone.github.io/cricket-auction
+      //
+      // Seeded empty on purpose: setup() runs before the site exists and cannot
+      // know the URL. tournament.create builds the registration and projector
+      // links from it, so while this is blank the admin gets path-only links
+      // like "/register/TRN_xxx" that are not shareable. RUNBOOK part 1 step 7a
+      // covers filling it in.
+      { key: 'frontend_base_url', value: String(SetupUtil.def('frontend_base_url', '')) }
     ];
   }
 };
