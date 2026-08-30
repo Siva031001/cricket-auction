@@ -3704,13 +3704,14 @@ const Suites = {
                 'auth = ' + T._fmt(r.auth));
             });
 
-          const join = Suites._route('auth.organiserJoin');
-          T.assertEqual(join.auth, 'PUBLIC',
+          const joinRoute = Suites._route('auth.organiserJoin');
+          T.assertEqual(joinRoute.auth, 'PUBLIC',
             'auth.organiserJoin has to be PUBLIC: the organiser has no account yet, so ' +
             'there is no session token to authenticate with. The one-time token in the ' +
             'payload is the credential.');
-          T.assert(join.methods.indexOf('POST') !== -1, 'auth.organiserJoin must accept POST');
-          T.assert(join.methods.indexOf('GET') === -1,
+          T.assert(joinRoute.methods.indexOf('POST') !== -1,
+            'auth.organiserJoin must accept POST');
+          T.assert(joinRoute.methods.indexOf('GET') === -1,
             'auth.organiserJoin must NOT accept GET. On GET the join token would travel ' +
             'in the query string and land in browser history, referrers and server logs ' +
             '(DESIGN.md §5.3).');
@@ -3727,7 +3728,7 @@ const Suites = {
 
           T.assert(typeof token === 'string' && token.length > 0,
             'the joinUrl must carry a ?k= token, got ' + T._fmt(f.out.joinUrl));
-          T.assertEqual(f.out.joinUrl.indexOf(ORGANISER_JOIN_PATH + '?k=') !== -1, true,
+          T.assert(f.out.joinUrl.indexOf(ORGANISER_JOIN_PATH + '?k=') !== -1,
             'the link must point at ' + ORGANISER_JOIN_PATH + ', got ' +
             T._fmt(f.out.joinUrl));
           // 32 random bytes rendered as hex is 64 characters (CONTRACTS-PHASE3 §1).
@@ -5163,7 +5164,7 @@ const Suites = {
         const w = g.w;
         const good = g.bySerial[1].player;
         const rich = w.team['ZZ Rich'].team_id;
-        const attempt = (payload, extra) => {
+        const attempt = (payload) => {
           const body = {
             tournamentId: w.tid, playerId: good.player_id, teamId: rich,
             amount: 5000, expectedVersion: ver(w.tid)
@@ -8569,9 +8570,13 @@ const Suites = {
     const existing = Repo.findBy(SHEETS.TOURNAMENTS, 'tournament_id', tid);
     if (existing) {
       // Debris from a run that died before cleanup. Left alone, its Players rows
-      // would make "the first registration is serial 1" fail for the wrong reason.
+      // would make "the first registration is serial 1" fail for the wrong reason,
+      // its Teams rows would make every team name a duplicate, and its
+      // AuctionResults rows would put money into counters this run never spent.
+      T._purge(SHEETS.AUCTION_RESULTS, r => r.tournament_id === tid, []);
       T._purge(SHEETS.PAYMENTS, r => r.tournament_id === tid, []);
       T._purge(SHEETS.PLAYERS, r => r.tournament_id === tid, []);
+      T._purge(SHEETS.TEAMS, r => r.tournament_id === tid, []);
       Repo.updateRow(SHEETS.TOURNAMENTS, existing._row, row);
     } else {
       Repo.append(SHEETS.TOURNAMENTS, row);

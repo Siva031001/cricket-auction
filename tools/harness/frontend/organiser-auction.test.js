@@ -1376,9 +1376,226 @@ test('edge: no offline pack is flagged BEFORE the internet fails, not during it'
   const env = await open();
   await flush(6);
   const banners = first(env.root(), 'auc__banners').textContent;
-  assert.ok(/no offline pack on this laptop/i.test(banners),
+  assert.ok(/Nothing is cached/i.test(banners),
     'finding out mid-outage is the failure this line prevents: ' + banners);
   assert.ok(/keep a paper list either way/i.test(banners));
+  assert.ok(/advice, not a block/i.test(banners), 'advisory, never blocking');
+});
+
+/* ---------------------------------------------------------------------- *
+ * H2. The offline pack — arming the safety net (CONTRACTS-PHASE4-7 §5.5.1)
+ * ---------------------------------------------------------------------- */
+
+/** player.list rows the real Offline.downloadPack will accept. */
+const PACK_ROWS = [1, 2, 3].map((i) => ({
+  player_id: 'PLY_' + i, serial_no: i, name: 'Player ' + i,
+  role: 'BATSMAN', style: 'RIGHT', age_years: 20 + i,
+  photo_thumb_url: 'https://drive.google.com/thumbnail?id=P' + i,
+  payment_status: 'VERIFIED', is_withdrawn: false
+}));
+
+function packHandlers(extra) {
+  return Object.assign({
+    'player.list': () => ({
+      data: { rows: PACK_ROWS, total: PACK_ROWS.length, page: 1, totalPages: 1 }
+    })
+  }, extra || {});
+}
+
+/** The Download button, wherever it sits in the pack panel. */
+function packBtn(env) {
+  return first(env.root(), 'auc-pack__go');
+}
+
+test('pack: the console has a Download offline pack control, and it is not buried', async () => {
+  const env = await open({ handlers: packHandlers() });
+  await flush(6);
+
+  const panel = first(env.root(), 'auc-pack');
+  assert.ok(panel, 'there is a pack panel');
+  const bodyKids = first(env.root(), 'auc__body').childNodes;
+  assert.strictEqual(bodyKids[0], panel,
+    'it is the first thing in the body — a pack downloaded after the wifi died is useless');
+
+  const btn = packBtn(env);
+  assert.ok(btn, 'and a real button');
+  assert.strictEqual(btn.textContent, 'Download offline pack');
+  assert.strictEqual(panel.dataset.state, 'none', 'nothing is cached yet');
+  assert.ok(/NO OFFLINE PACK/.test(first(panel, 'auc-pack__status').textContent));
+  assert.strictEqual(first(panel, 'auc-pack__status').getAttribute('aria-live'), 'polite');
+});
+
+test('pack: pressing Download calls downloadPack ONCE and reports real progress', async () => {
+  const env = await open({ handlers: packHandlers() });
+  await flush(6);
+
+  let calls = 0;
+  const realDownload = env.Offline.downloadPack;
+  const seenPhases = [];
+  env.Offline.downloadPack = function (tid, onProgress, opts) {
+    calls += 1;
+    assert.strictEqual(tid, 'TRN_1', 'scoped to this tournament');
+    return realDownload.call(env.Offline, tid, function (info) {
+      seenPhases.push(info.phase);
+      onProgress(info);
+    }, opts);
+  };
+
+  packBtn(env).click();
+
+  // Mid-flight: the button is busy and the bar is on screen.
+  assert.strictEqual(packBtn(env).disabled, true, 'no second download');
+  assert.strictEqual(packBtn(env).textContent, 'Downloading…');
+  assert.strictEqual(first(env.root(), 'auc-pack').dataset.state, 'working');
+  assert.ok(byTag(first(env.root(), 'auc-pack__progress'), 'PROGRESS').length === 1,
+    'a real <progress> element, not a spinner — 100+ images is a long wait');
+
+  packBtn(env).click();
+  assert.strictEqual(calls, 1, 'a second press while it runs must do nothing');
+
+  await flush(40);
+
+  assert.strictEqual(calls, 1, 'downloadPack was called exactly once');
+  assert.ok(seenPhases.indexOf('start') !== -1 && seenPhases.indexOf('players') !== -1 &&
+    seenPhases.indexOf('done') !== -1,
+  'progress arrived for every phase, saw ' + JSON.stringify(seenPhases));
+  assert.ok(/Finished/.test(first(env.root(), 'auc-pack__phase').textContent),
+    first(env.root(), 'auc-pack__phase').textContent);
+  assert.strictEqual(packBtn(env).disabled, false, 'and the button comes back');
+
+  const cached = await env.Offline.getPlayer('TRN_1', 2);
+  assert.ok(cached && cached.name === 'Player 2', 'the pack really is on the laptop now');
+});
+
+test('pack: a text-only pack is reported PARTIAL, never ready, however offline.js scores it', async () => {
+  const env = await open({ handlers: packHandlers() });
+  await flush(6);
+
+  packBtn(env).click();
+  await flush(40);
+
+  // Node has no IndexedDB, so offline.js takes its localStorage path and
+  // caches no photographs at all. It scores that pack complete:true.
+  const raw = await env.Offline.isPackReady('TRN_1');
+  assert.strictEqual(raw.ready, true, 'offline.js itself says ready');
+  assert.strictEqual(raw.imageCount, 0, 'with zero photographs');
+  assert.strictEqual(raw.degraded, true);
+
+  // The console must NOT repeat that to the organiser.
+  const panel = first(env.root(), 'auc-pack');
+  assert.strictEqual(panel.dataset.state, 'partial',
+    'a pack with no photographs is PARTIAL on this screen, never ready');
+  const status = first(panel, 'auc-pack__status').textContent;
+  assert.ok(/PLAYER DETAILS ONLY/.test(status), status);
+  assert.ok(/NO photographs/.test(status), status);
+  assert.ok(/NOT a complete pack/.test(status), status);
+  assert.ok(!/READY/.test(status), 'the word READY must not appear: ' + status);
+
+  assert.ok(/incomplete/i.test(first(env.root(), 'auc__banners').textContent),
+    'and the top-of-screen advisory still says so');
+});
+
+test('pack: a genuinely complete pack reads as READY with its counts and time', async () => {
+  const env = await open({ handlers: packHandlers() });
+  await flush(6);
+
+  // What a browser with IndexedDB and a working image fetcher would produce.
+  env.Offline.isPackReady = () => Promise.resolve({
+    ready: true, exists: true, complete: true, degraded: false,
+    playerCount: 400, imageCount: 400,
+    expectedPlayers: 400, expectedImages: 400,
+    downloadedAt: '2026-08-30T09:15:42.000Z', imageFailures: [], warnings: [],
+    storage: 'idb'
+  });
+  env.page._loadPackStatus(env.page._state);
+  await flush(6);
+
+  const panel = first(env.root(), 'auc-pack');
+  assert.strictEqual(panel.dataset.state, 'ready');
+  assert.strictEqual(first(panel, 'auc-pack__status').textContent,
+    'Offline pack READY — 400 players and 400 photographs, downloaded 2026-08-30 09:15 UTC.');
+  assert.strictEqual(packBtn(env).textContent, 'Download the pack again');
+  assert.ok(!/offline pack/i.test(first(env.root(), 'auc__banners').textContent),
+    'and the advisory banner goes away');
+});
+
+test('pack: a half-finished pack reads as INCOMPLETE with both counts', async () => {
+  const env = await open({ handlers: packHandlers() });
+  await flush(6);
+
+  env.Offline.isPackReady = () => Promise.resolve({
+    ready: false, exists: true, complete: false, degraded: false,
+    playerCount: 398, imageCount: 350,
+    expectedPlayers: 400, expectedImages: 400,
+    downloadedAt: '2026-08-30T09:15:00.000Z',
+    imageFailures: [{}, {}], warnings: ['50 of 400 photographs could not be cached.'],
+    storage: 'idb'
+  });
+  env.page._loadPackStatus(env.page._state);
+  await flush(6);
+
+  const panel = first(env.root(), 'auc-pack');
+  assert.strictEqual(panel.dataset.state, 'partial');
+  const status = first(panel, 'auc-pack__status').textContent;
+  assert.ok(/INCOMPLETE/.test(status), status);
+  assert.ok(/398 of 400 players/.test(status), status);
+  assert.ok(/350 of 400 photographs/.test(status), status);
+  assert.ok(/50 of 400 photographs could not be cached\./.test(panel.textContent),
+    'offline.js\'s own warning is passed through: ' + panel.textContent);
+});
+
+test('pack: NO_IMAGE_FETCHER is named, not swallowed, and the next press asks for text only', async () => {
+  const env = await open({ handlers: packHandlers() });
+  await flush(6);
+
+  // Before anything is pressed, the missing fetcher is already explained —
+  // KNOWN-ISSUES.md 13/14 is a property of the deployment, not a surprise.
+  assert.ok(/cannot read photograph bytes from Drive/i.test(
+    first(env.root(), 'auc-pack__warnings').textContent),
+  'the known gap is stated up front');
+
+  let seenOpts = null;
+  env.Offline.downloadPack = function (tid, onProgress, opts) {
+    seenOpts = opts;
+    const e = new Error('Cannot download photographs: no image fetcher is installed.');
+    e.code = 'NO_IMAGE_FETCHER';
+    return Promise.reject(e);
+  };
+
+  packBtn(env).click();
+  await flush(20);
+
+  const warnings = first(env.root(), 'auc-pack__warnings').textContent;
+  assert.ok(/NO_IMAGE_FETCHER/.test(warnings), 'the code is shown: ' + warnings);
+  assert.ok(/NOTHING was saved/.test(warnings),
+    'and it says plainly that nothing was saved, rather than claiming success');
+  assert.ok(/PLAYER DETAILS ONLY/.test(warnings), 'and what the next press will do');
+  assert.notStrictEqual(first(env.root(), 'auc-pack').dataset.state, 'ready',
+    'a failed download must never leave the panel reading ready');
+
+  packBtn(env).click();
+  await flush(20);
+  assert.ok(seenOpts && seenOpts.imagesOptional === true,
+    'the second press deliberately asks for a text-only pack, so the message was true');
+});
+
+test('pack: a storage fault names itself instead of failing silently', async () => {
+  const env = await open({ handlers: packHandlers() });
+  await flush(6);
+
+  env.Offline.downloadPack = function () {
+    const e = new Error('out of room');
+    e.code = 'QUOTA_EXCEEDED';
+    return Promise.reject(e);
+  };
+  packBtn(env).click();
+  await flush(20);
+
+  const warnings = first(env.root(), 'auc-pack__warnings').textContent;
+  assert.ok(/QUOTA_EXCEEDED/.test(warnings), warnings);
+  assert.ok(/out of storage/i.test(warnings), warnings);
+  assert.ok(/Do not start the auction assuming the pack is there/i.test(warnings),
+    'the consequence is spelled out: ' + warnings);
 });
 
 test('edge: no session token goes straight to sign-in without flashing an empty console', async () => {
@@ -1673,6 +1890,50 @@ const mutations = [
       enterSale(env, 'TM_1', 75000).go.click();
       await flush(20);
       assert.strictEqual(env.api.calls.filter((c) => c.action === 'auction.markSold').length, 1);
+    }
+  },
+  {
+    name: 'M7 let a text-only pack read as ready -> the partial-pack test must fail',
+    mutate: (s) => s.replace(
+      "    if (info.degraded === true) return 'partial';\n" +
+      "    if (Number(info.imageCount) <= 0) return 'partial';",
+      '    /* removed */'),
+    check: async (mutate) => {
+      const env = await open({ mutate: mutate, handlers: packHandlers() });
+      await flush(6);
+      packBtn(env).click();
+      await flush(40);
+
+      const raw = await env.Offline.isPackReady('TRN_1');
+      assert.strictEqual(raw.ready, true, 'offline.js itself says ready');
+      assert.strictEqual(raw.imageCount, 0, 'with zero photographs');
+
+      const panel = first(env.root(), 'auc-pack');
+      assert.strictEqual(panel.dataset.state, 'partial',
+        'a pack with no photographs is PARTIAL on this screen, never ready');
+      assert.ok(!/READY/.test(first(panel, 'auc-pack__status').textContent),
+        'the word READY must not appear');
+    }
+  },
+  {
+    name: 'M8 swallow a pack download failure -> the NO_IMAGE_FETCHER test must fail',
+    mutate: (s) => s.replace(
+      '      state.packError = {\n        code: code,',
+      '      state.packError = (0) ? { code: code,'),
+    check: async (mutate) => {
+      const env = await open({ mutate: mutate, handlers: packHandlers() });
+      await flush(6);
+      env.Offline.downloadPack = function () {
+        const e = new Error('no fetcher');
+        e.code = 'NO_IMAGE_FETCHER';
+        return Promise.reject(e);
+      };
+      packBtn(env).click();
+      await flush(20);
+      const warnings = first(env.root(), 'auc-pack__warnings').textContent;
+      assert.ok(/NO_IMAGE_FETCHER/.test(warnings), 'the code is shown: ' + warnings);
+      assert.ok(/NOTHING was saved/.test(warnings),
+        'and it says plainly that nothing was saved');
     }
   }
 ];
