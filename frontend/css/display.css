@@ -851,3 +851,103 @@ body[data-route="display"] .status {
     -webkit-text-fill-color: CanvasText;
   }
 }
+
+/* ======================================================================
+   REVISION 2 — the standings and the summary were colliding
+   ======================================================================
+
+   .display__bottom was a single column: the six team cards wrapped onto two
+   rows, the six summary figures wrapped onto another, and the whole lot was
+   squeezed into max-height:30vh. On a real projector they overlapped.
+
+   Now two columns, as asked for: standings take the width they need on the
+   left, and the summary becomes a compact two-column table pinned to the
+   bottom-right corner. It is reference information — the audience reads the
+   player and the purses, not the tallies — so it gets the smaller corner.
+   ====================================================================== */
+
+body[data-route="display"] .display__bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: clamp(12px, 2vw, 40px);
+  row-gap: clamp(6px, 1vh, 14px);
+  align-items: end;
+  /* A little more room than 30vh now that the two are side by side rather
+     than stacked. */
+  max-height: 34vh;
+}
+
+body[data-route="display"] .display__teams {
+  grid-column: 1;
+  align-self: end;
+}
+
+/* The summary as a real two-column table: label on the left, figure on the
+   right, one row each. Right-aligned figures with tabular numerals so the
+   column of digits lines up. */
+body[data-route="display"] .display__summary {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: clamp(8px, 1vw, 20px);
+  row-gap: 2px;
+  align-content: end;
+  align-items: baseline;
+  padding: clamp(6px, 0.9vh, 14px) clamp(8px, 1vw, 18px);
+  border-radius: clamp(8px, 0.7vw, 14px);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(120, 190, 255, 0.16);
+  /* Never let it grow into the standings. */
+  max-width: 34vw;
+}
+
+/* display:contents so the label and value become direct grid children and
+   land in the two columns, instead of each item being one cell. */
+body[data-route="display"] .display__summary-item {
+  display: contents;
+}
+
+body[data-route="display"] .display__summary-label {
+  grid-column: 1;
+  text-align: left;
+  /* Smaller than the standings: this is the corner reference, not the headline. */
+  font-size: clamp(9px, 0.8vw, 14px);
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+body[data-route="display"] .display__summary-value {
+  grid-column: 2;
+  text-align: right;
+  font-size: clamp(12px, 1.05vw, 20px);
+  white-space: nowrap;
+}
+
+/* A projector mounted portrait, or a narrow window: go back to stacking, and
+   let the summary run across rather than sit in a corner that no longer
+   exists. */
+@media (max-aspect-ratio: 1/1) {
+  body[data-route="display"] .display__bottom {
+    grid-template-columns: minmax(0, 1fr);
+    max-height: 40vh;
+  }
+  body[data-route="display"] .display__teams,
+  body[data-route="display"] .display__summary {
+    grid-column: 1;
+  }
+  body[data-route="display"] .display__summary {
+    grid-template-columns: repeat(3, auto);
+    justify-content: start;
+    max-width: none;
+  }
+  body[data-route="display"] .display__summary-item {
+    display: flex;
+    gap: 0.4em;
+    align-items: baseline;
+  }
+  body[data-route="display"] .display__summary-label,
+  body[data-route="display"] .display__summary-value {
+    grid-column: auto;
+    text-align: left;
+  }
+}

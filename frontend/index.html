@@ -52,13 +52,13 @@
 
   Also check CONFIG.BASE_PATH in js/config.js. GitHub Pages project sites live
   under /<repo-name>/, so BASE_PATH must be '/cricket-auction' (or '' if you
-  ever host at a domain root). The same value is duplicated in 404.html; if
-  you change one, change both.
+  ever host at a domain root). THREE places carry this value and all three must
+  agree: CONFIG.BASE_PATH, the <base href> above, and 404.html.
 
-  Serving this locally? Run a static server from the frontend/ directory and
-  temporarily set BASE_PATH to '', because there is no /cricket-auction/
-  prefix on localhost. A plain static server also will not do the 404.html
-  bounce, so open the root URL and click through, rather than deep-linking.
+  Serving this locally? Use  npm run serve  (tools/serve.js). It reads
+  BASE_PATH itself, so no edit is needed, and it does the 404.html bounce — so
+  deep links like /cricket-auction/admin/login work directly. A plain static
+  server will not do either.
 
   Stack: plain HTML + CSS + vanilla JS. No framework, no bundler, no npm, no
   CDN <script> tags, no web fonts (CONTRACTS.md §15). A projector at the venue
