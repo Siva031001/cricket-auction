@@ -23,7 +23,7 @@ const CONFIG = {
    * Re-deploying creates a NEW /exec URL unless you pick "Manage deployments"
    * and edit the existing one. See DESIGN.md §17.3, "the deployment trap".
    * ------------------------------------------------------------------ */
-  API_BASE_URL: 'https://script.google.com/macros/s/AKfycbw1YmldIZKLjcyayLT5WyH6Ovf2f28vhbWV-q3pjLY2mzQgiP1BS1BHpNBadtiAJoSUzQ/exec',
+  API_BASE_URL: 'https://script.google.com/macros/s/AKfycbyvkQ0ZAI7dUglav0HDpegUaxjmvP1H5uMPGkhLHJQhh439bKlwsGOdqUwA6PIDENGXrQ/exec',
 
   /**
    * How often the auction screens re-poll for state.
