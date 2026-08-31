@@ -943,7 +943,29 @@ const OrganiserDashboardPage = {
       hint: 'Cannot go below the number of players the team has already bought.'
     });
 
-    [name, owner, purse, squad].forEach(function (f) { grid.appendChild(f.wrap); });
+    // Team logo (feedback item 2). Optional — a team with no logo is normal, so
+    // this never blocks a save. team.update uploads outside the auction lock,
+    // which is why it could not be offered before.
+    const logo = UI.field({
+      label: 'Team logo', name: 'logo', type: 'file',
+      accept: 'image/*',
+      hint: team.logo_url
+        ? 'Optional. Choosing a file replaces the current logo.'
+        : 'Optional. PNG or JPEG.'
+    });
+
+    // Only offered when there is something to remove, so it is never a control
+    // that does nothing.
+    let dropLogo = null;
+    if (team.logo_url) {
+      dropLogo = UI.field({
+        label: 'Remove the current logo', name: 'removeLogo', type: 'checkbox',
+        hint: 'The team keeps everything else. The old image goes to Drive trash.'
+      });
+    }
+
+    [name, owner, purse, squad, logo].forEach(function (f) { grid.appendChild(f.wrap); });
+    if (dropLogo) grid.appendChild(dropLogo.wrap);
     form.appendChild(grid);
 
     // Per-row live region, so the reason a change was refused appears beside
@@ -1047,7 +1069,17 @@ const OrganiserDashboardPage = {
         payload.maxPlayers = Number(values.maxPlayers); changed += 1;
       }
 
-      if (!changed) {
+      if (dropLogo && dropLogo.input && dropLogo.input.checked) {
+        payload.removeLogo = true; changed += 1;
+      }
+
+      // The image is read and resized before the request, so the file the
+      // organiser picked never travels at full size (CONTRACTS-PHASE1 §1).
+      const logoFile = (logo.input && logo.input.files && logo.input.files.length)
+        ? logo.input.files[0]
+        : null;
+
+      if (!changed && !logoFile) {
         OrganiserDashboardPage._showError(rowErrors,
           'Nothing has changed, so there is nothing to save.');
         return;
@@ -1055,7 +1087,20 @@ const OrganiserDashboardPage = {
 
       setBusy(true);
 
-      OrganiserDashboardPage._call('team.update', payload)
+      const prepared = logoFile
+        ? ImageTool.fromFile(logoFile, { maxEdge: 512, quality: 0.85, keepPng: true })
+            .then(function (out) {
+              payload.logo = { data: out.data, mime: out.mime, filename: out.filename };
+            })
+        : Promise.resolve();
+
+      prepared.catch(function (err) {
+        setBusy(false);
+        OrganiserDashboardPage._showError(rowErrors,
+          'That logo could not be read: ' + ((err && err.message) || 'unknown error'));
+        throw err;
+      }).then(function () {
+      return OrganiserDashboardPage._call('team.update', payload)
         .then(function () {
           if (!OrganiserDashboardPage._current(state)) return;
           OrganiserDashboardPage._flash =
@@ -1070,6 +1115,10 @@ const OrganiserDashboardPage = {
           setBusy(false);
           OrganiserDashboardPage._surfaceUpdateError(err, rowErrors, purse, squad, name);
         });
+      }).catch(function () {
+        // The logo-read failure has already been reported above. Swallowed here
+        // only so it does not surface as an unhandled rejection.
+      });
     }
 
     return { el: form, firstInput: name.input };

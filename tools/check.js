@@ -138,7 +138,14 @@ function checkBackend() {
   // 4. Cross-module symbol resolution. A typo like Util.formatIst only shows up
   //    at call time in Apps Script, which could be mid-auction.
   vm.runInContext(
+    // EVERY module, not a subset. This list was missing Teams, Payments,
+    // Auction, Organisers and Reports, so a call to a function that does not
+    // exist on any of them passed silently — which it did: Teams._trashLogo
+    // (the real name is _trashQuietly) was caught by reading the code, not by
+    // this check. A missing module here is a hole in the only guard against a
+    // typo that would otherwise surface mid-auction.
     'globalThis.__mods = {Util, Repo, Cache, Auth, Audit, Drive, Players, Tournaments, ' +
+    'Teams, Payments, Auction, Organisers, Reports, ' +
     'SHEETS, HEADERS, ENUM, ERR, ID_PREFIX, DEFAULTS};', ctx
   );
   let missing = 0;
@@ -148,6 +155,11 @@ function checkBackend() {
       if (!obj || typeof obj !== 'object') continue;
       const re = new RegExp('(?<![\\w$.])' + name + '\\.([A-Za-z_$][\\w$]*)', 'g');
       for (const m of src.matchAll(re)) {
+        // "Payments.gs" in prose is a FILENAME, not a member reference. Module
+        // names double as file names throughout this project, so every mention
+        // of a sibling file in a string or a surviving comment would otherwise
+        // be reported as a missing function.
+        if (m[1] === 'gs') continue;
         if (!(m[1] in obj)) { bad(`${f}: ${name}.${m[1]} does not exist`); missing++; }
       }
     }

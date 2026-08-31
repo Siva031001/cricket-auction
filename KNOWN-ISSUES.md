@@ -38,10 +38,12 @@ Adding `max_registrations` is one field and one check. The cheapest option — o
 
 ## Functional gaps
 
-### 5. Team logo cannot be changed after creation
-`team.create` accepts a logo; `team.update` does not. A Drive upload cannot happen inside the auction lock, and the workaround (upload before the lock, write the id inside it, sweep orphans) was out of scope for Phase 3.
+### 5. Team logo can now be changed — RESOLVED
+`team.update` accepts a logo and a `removeLogo` flag. The upload happens **before** the lock and only the resulting file id is written inside it — the same shape as player registration (`DESIGN.md` §6.2), because holding the script-wide lock through a Drive upload would stall every sale in a live auction behind someone changing a picture.
 
-Cosmetic only. The fix is the pattern `Players.register` already uses.
+The superseded file is trashed only after the sheet has stopped pointing at it, so a failure in between leaves a stray file rather than a team whose logo id points at nothing.
+
+The organiser dashboard offers the field on team edit, and the "remove" checkbox appears only when there is a logo to remove.
 
 ### 5a. Counter drift is now repairable from the UI — RESOLVED
 The reports screen detected drift between the cached team totals and the auction history, but only told the admin to "run team.recount" — an action name, not something they could do. It now carries a **Repair the stored totals** button that calls the action and reloads.

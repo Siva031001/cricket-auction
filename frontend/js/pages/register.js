@@ -838,6 +838,17 @@ const RegisterPage = {
     const wrap = RegisterPage._el(field);
     if (wrap) wrap.appendChild(box);
 
+    // "Remove" (feedback item 1). Choosing a file was previously irreversible
+    // from the UI: the only way out was to pick a different one. Someone who
+    // attaches the wrong screenshot — easy, they are all screenshots — had no
+    // way to undo it, and clearing a file input is not obvious.
+    const remove = UI.button('Remove', function () {
+      RegisterPage._clearImage(state, key, field, img, caption, remove);
+    }, { variant: 'secondary' });
+    remove.className = remove.className + ' reg-preview__remove';
+    remove.hidden = true;
+    box.appendChild(remove);
+
     state.tokens[key] = 0;
 
     field.input.addEventListener('change', function () {
@@ -852,8 +863,10 @@ const RegisterPage = {
 
       if (!file) {
         caption.textContent = '';
+        remove.hidden = true;
         return;
       }
+      remove.hidden = false;
       if (field.clearError) field.clearError();
 
       // Instant preview from the original file, swapped for the actual
@@ -919,6 +932,49 @@ const RegisterPage = {
         if (field.setError) field.setError(RegisterPage.MSG.imageFailed);
       });
     });
+  },
+
+  /**
+   * Discard a chosen image and put the field back to its untouched state.
+   *
+   * Clears the encoded payload, the file input, the preview and the caption, and
+   * bumps the token so an encode still in flight for the removed file cannot
+   * land afterwards and quietly re-attach it.
+   *
+   * @param {!Object} state the page state
+   * @param {string} key 'photo' or 'screenshot'
+   * @param {!Object} field the UI.field wrapper
+   * @param {!HTMLElement} img the preview element
+   * @param {!HTMLElement} caption the caption element
+   * @param {!HTMLElement} removeBtn the control that called this
+   * @return {void}
+   */
+  _clearImage: function (state, key, field, img, caption, removeBtn) {
+    if (RegisterPage._state !== state) return;
+
+    // Invalidate any encode still running for the file being removed. Without
+    // this, a slow resize could resolve after the click and set state.images
+    // again — the image would be gone from the screen but still submitted.
+    state.tokens[key] = (state.tokens[key] || 0) + 1;
+
+    state.images[key] = null;
+    state.pending[key] = false;
+
+    try {
+      field.input.value = '';
+    } catch (e) {
+      /* Some browsers refuse to write to a file input; the payload above is
+         what actually decides what gets sent, so this is cosmetic. */
+    }
+
+    img.hidden = true;
+    img.removeAttribute('src');
+    caption.className = 'reg-preview__caption';
+    caption.textContent = '';
+    if (field.clearError) field.clearError();
+    if (removeBtn) removeBtn.hidden = true;
+
+    if (field.input && field.input.focus) field.input.focus();
   },
 
   /**

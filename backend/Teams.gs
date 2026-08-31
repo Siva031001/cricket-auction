@@ -1137,10 +1137,14 @@ const Teams = {
     const wantsOwner = p.ownerName !== undefined || p.owner_name !== undefined;
     const wantsPurse = Teams._has(p, 'purseTotal', 'purse_total');
     const wantsSquad = Teams._has(p, 'maxPlayers', 'max_players');
+    const wantsLogo = !!(p.logo && p.logo.data);
+    const wantsLogoGone = p.removeLogo === true || p.remove_logo === true;
 
-    if (!wantsName && !wantsOwner && !wantsPurse && !wantsSquad) {
+    if (!wantsName && !wantsOwner && !wantsPurse && !wantsSquad &&
+        !wantsLogo && !wantsLogoGone) {
       throw Util.AppError(ERR.VALIDATION_FAILED,
-        'Nothing to change. Send at least one of: team name, owner name, purse or squad size.');
+        'Nothing to change. Send at least one of: team name, owner name, purse, ' +
+        'squad size or logo.');
     }
 
     // Validated before the lock is taken — a typo does not need to queue behind
@@ -1154,6 +1158,26 @@ const Teams = {
       p.maxPlayers !== undefined ? p.maxPlayers : p.max_players, 'The squad size') : 0;
 
     const ua = Teams._str(p.ua);
+
+    // THE LOGO UPLOADS BEFORE THE LOCK, and only the resulting file id is
+    // written inside it.
+    //
+    // This is why team.update had no logo field until now: a Drive upload takes
+    // a couple of seconds, and holding the script-wide lock for that would stall
+    // every sale in a live auction behind someone changing a picture. Same
+    // reasoning, and same shape, as player registration (DESIGN.md §6.2).
+    //
+    // The cost is an orphaned Drive file if a guard inside the lock then rejects
+    // the update. That is the accepted trade there too, and the old file is only
+    // trashed after the sheet has stopped pointing at it.
+    let newLogoId = '';
+    if (wantsLogo) {
+      const team0 = Repo.findBy(Teams._tab(), 'team_id', teamId);
+      if (!team0) throw Util.AppError(ERR.NOT_FOUND, 'That team was not found.');
+      const trn0 = Teams._requireTournament(Teams._str(team0.tournament_id));
+      Auth.requireTournament(session, Teams._str(team0.tournament_id));
+      newLogoId = Teams._uploadLogo(trn0, p.logo, Teams._str(team0.team_name));
+    }
 
     return Repo.withLock(function () {
       const allTeams = Repo.readAll(Teams._tab());
@@ -1208,6 +1232,24 @@ const Teams = {
         changed.owner_name = { from: currentOwner, to: newOwner };
       }
 
+      // --- Logo: replace or clear ------------------------------------------
+      // The file itself was already uploaded above, outside the lock. Only the
+      // id moves here. The superseded file is trashed AFTER the sheet stops
+      // pointing at it, so a failure between the two leaves a stray file rather
+      // than a team whose logo id points at nothing.
+      const currentLogo = Teams._str(team.logo_file_id);
+      if (wantsLogo && newLogoId && newLogoId !== currentLogo) {
+        patch.logo_file_id = newLogoId;
+        prev.logo_file_id = currentLogo;
+        next.logo_file_id = newLogoId;
+        changed.logo_file_id = { from: currentLogo, to: newLogoId };
+      } else if (wantsLogoGone && currentLogo) {
+        patch.logo_file_id = '';
+        prev.logo_file_id = currentLogo;
+        next.logo_file_id = '';
+        changed.logo_file_id = { from: currentLogo, to: '' };
+      }
+
       // --- Squad size: raising is free, lowering has one floor -------------
       if (wantsSquad && newSquad !== currentSquad) {
         if (newSquad < playersCount) {
@@ -1259,6 +1301,12 @@ const Teams = {
 
       Repo.flush();
       Teams._bumpIfAuctionLive(tournamentId);
+
+      // Only now that the sheet no longer references it. Best-effort: a Drive
+      // hiccup must not fail an update that has already been written.
+      if (changed.logo_file_id && changed.logo_file_id.from) {
+        Teams._trashQuietly(changed.logo_file_id.from);
+      }
 
       const out = Teams._listRow(merged);
       // So the confirmation can state the effect in the organiser's own terms
