@@ -625,10 +625,14 @@ body[data-route="display"] .display__card {
   grid-template-columns: minmax(0, 48fr) minmax(0, 52fr);
   gap: clamp(16px, 2.5vw, 56px);
   align-items: stretch;
-  /* Sideways only. A blanket overflow:hidden also clips vertically, which on a
-     short screen removed the name and the sold amount rather than the stray
-     pixels it was aimed at. */
-  overflow-x: hidden;
+  /* Sideways only — and `clip`, not `hidden`.
+     overflow-x:hidden beside an unset overflow-y is not a legal pair: the
+     visible axis computes to `auto`, so the card silently becomes a VERTICAL
+     SCROLL CONTAINER. On a projector that means a scrollbar over content the
+     hall cannot see and nobody can scroll (the cursor is hidden). `clip` is
+     the only value permitted to coexist with `visible`. */
+  overflow-x: clip;
+  overflow-y: visible;
   min-height: 0;
 }
 
@@ -684,12 +688,19 @@ body[data-route="display"] .display__details {
    the very worst, by clamping to three lines with an ellipsis. Never to zero. */
 body[data-route="display"] .display-name {
   flex: 0 1 auto;
-  min-height: 0;
+  /* THE FLOOR IS THE GUARANTEE, not the overflow keyword.
+     `clip` and `hidden` clip identically — swapping one for the other changed
+     nothing except which string a test grepped for. What actually stops the
+     name vanishing is a minimum height it cannot shrink below, so two lines of
+     it are always painted whatever the viewport does.
+     overflow:hidden is kept deliberately: -webkit-line-clamp is specified
+     against it, and with `clip` the ellipsis is not guaranteed to render. */
+  min-height: 2.1em;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   line-clamp: 3;
-  overflow: clip;
+  overflow: hidden;
 }
 
 body[data-route="display"] .display__result {
@@ -788,7 +799,10 @@ body[data-route="display"] .display__team-count[data-full="true"] {
   font-weight: 700;
 }
 body[data-route="display"] .display__team-cell:has(.display__team-count[data-full="true"]) {
-  border-left-color: #ffd479;
+  /* The full shorthand. REVISION 2's base rule sets border-left:0, so a
+     colour-only override painted nothing — a full squad lost its marker. */
+  border-left: 4px solid #ffd479;
+  padding-left: clamp(4px, 0.5vw, 8px);
   background: rgba(255, 212, 121, 0.09);
 }
 
@@ -889,6 +903,14 @@ body[data-route="display"] .status {
    printed twelve times — replaced by a single caption over the block.
    ====================================================================== */
 
+/* Re-stated after the base rules so it actually applies. It previously sat
+   earlier in the file with identical specificity, so the 36vh below silently
+   won and the entire short-screen accommodation was dead code. */
+@media (max-height: 620px) {
+  body[data-route="display"] .display__bottom { max-height: 26vh; }
+  body[data-route="display"] .display__teams-caption { display: none; }
+}
+
 body[data-route="display"] .display__bottom {
   display: grid;
   /* Summary left (it is small and fixed), teams right and as wide as they
@@ -970,7 +992,11 @@ body[data-route="display"] .display__teams {
 
      The repeat(6) here is only the value used before the first paint. */
   grid-auto-flow: column;
-  grid-template-rows: repeat(6, auto);
+  /* --auto-rows is set inline by _paintTeams from the team count.
+     --rows-override lets a stylesheet rule win anyway: an inline
+     grid-template-rows would beat every media query, which is how the portrait
+     rule below came to be dead on arrival. */
+  grid-template-rows: repeat(var(--rows-override, var(--auto-rows, 6)), auto);
   grid-template-columns: none;
   gap: 1px clamp(10px, 1.4vw, 26px);
   margin: 0;
@@ -990,7 +1016,8 @@ body[data-route="display"] [data-density="compact"] .display__team-cell {
 }
 body[data-route="display"] [data-density="compact"] .display__team-name {
   font-size: clamp(10px, 0.8vw, 15px);
-  max-width: 13ch;
+  /* The cap earns its place here: rows are competing for width. */
+  max-width: 15ch;
 }
 body[data-route="display"] [data-density="compact"] .display__team-purse {
   font-size: clamp(10px, 0.85vw, 16px);
@@ -1033,6 +1060,12 @@ body[data-route="display"] .display__bottom:has(.display__teams-box[data-density
   max-height: 42vh;
 }
 body[data-route="display"] .display__bottom:has(.display__teams-box[data-columns="3"]) .display__summary,
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-density="tight"]) .display__summary {
+  /* Underneath the table, as the comment above promises. Source order puts the
+     summary first, and grid follows source order, so it needs saying. */
+  order: 2;
+}
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-columns="3"]) .display__summary,
 body[data-route="display"] .display__bottom:has(.display__teams-box[data-density="tight"]) .display__summary,
 body[data-route="display"] .display__bottom:has(.display__teams-box[data-columns="3"]) .display__teams-box,
 body[data-route="display"] .display__bottom:has(.display__teams-box[data-density="tight"]) .display__teams-box {
@@ -1055,13 +1088,15 @@ body[data-route="display"] .display__team-cell {
 body[data-route="display"] .display__team-name {
   font-size: clamp(11px, 0.95vw, 18px);
   font-weight: 600;
-  /* Ellipsis, not wrap: with 12 teams a wrapped name doubles a row's height and
-     pushes the last team off the bottom. The purse and the count are the
-     numbers being read; a long club name can be clipped. */
+  /* No width cap at normal density. Truncating "Royal Challengers Bangalore" on
+     a 1920px screen with a thousand unused pixels beside it contradicts the
+     policy this file states earlier: a clipped name is worse than a long one,
+     because half the hall supports that team. The cap only earns its place when
+     rows are actually competing for width — see the density blocks. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 15ch;
+  min-width: 0;
 }
 
 body[data-route="display"] .display__team-purse {
@@ -1101,6 +1136,7 @@ body[data-route="display"] .display__team-count[data-full="true"] {
     max-width: none;
   }
   body[data-route="display"] .display__teams {
-    grid-template-rows: repeat(4, auto);
+    /* Wide rather than tall: a portrait mount has the least vertical room. */
+    --rows-override: 4;
   }
 }

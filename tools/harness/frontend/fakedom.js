@@ -48,12 +48,19 @@ class Element {
     this.id = '';
     this.classList = new ClassList(this);
     this.dataset = {};
-    // Real elements always have one. Without it, any page setting an inline
-    // style throws a TypeError inside its render and every assertion that
-    // depends on the paint fails for an unrelated reason — which is exactly
-    // what happened when the projector started sizing its team grid from the
-    // team count.
-    this.style = {};
+    // Real elements always have one, and it is not a plain object: pages set
+    // custom properties through setProperty, which a bare {} does not have.
+    // Without these, any such call throws inside the page's render and every
+    // assertion downstream of the paint fails for an unrelated reason.
+    this.style = {
+      _props: {},
+      setProperty(name, value) { this._props[String(name)] = String(value); },
+      getPropertyValue(name) {
+        const v = this._props[String(name)];
+        return v === undefined ? '' : v;
+      },
+      removeProperty(name) { delete this._props[String(name)]; }
+    };
     this.offsetWidth = 0;
     this._listeners = {};
   }

@@ -588,34 +588,52 @@ test('the player name can never be clipped out of existence', async () => {
   const css = fs.readFileSync(CSS_PATH, 'utf8');
   const rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
 
-  // Find every .display-name block and check none of them hard-clips.
   const blocks = [...rules.matchAll(/\.display-name\s*\{([^}]*)\}/g)].map((m) => m[1]);
   assert.ok(blocks.length > 0, 'the name is styled somewhere');
-  blocks.forEach(function (body) {
-    assert.ok(!/overflow\s*:\s*hidden/.test(body),
-      'overflow:hidden on .display-name can remove the name entirely: ' + body.trim());
-  });
+  const nameCss = blocks.join(' ');
 
-  // And it must be able to shrink: a width-only font size keeps the name huge
-  // on a short screen, which is what forced the clipping.
-  const sized = blocks.join(' ');
-  assert.ok(/font-size:\s*clamp\([^)]*vh/.test(sized) || /min\([^)]*vh/.test(sized),
-    'the name size must respond to viewport HEIGHT, not width alone: ' + sized);
+  // A MINIMUM HEIGHT is the guarantee. The earlier version of this test banned
+  // the string "overflow: hidden", which proved nothing: `clip` clips exactly
+  // the same way, so swapping the keyword satisfied the test and changed no
+  // behaviour. A floor the box cannot shrink below is what actually keeps the
+  // name on screen.
+  assert.ok(/min-height\s*:\s*[0-9.]+\s*(em|rem|px|vh)/.test(nameCss),
+    '.display-name needs a min-height floor, or it can shrink to nothing: ' + nameCss);
+
+  // And it must be able to shrink into that floor rather than overflow: a
+  // width-only font size keeps the name huge on a short screen.
+  assert.ok(/min\([^)]*vh/.test(nameCss) || /clamp\([^)]*vh/.test(nameCss),
+    'the name size must respond to viewport HEIGHT, not width alone: ' + nameCss);
 
   // The card must not clip vertically either.
   const card = [...rules.matchAll(/\.display__card\s*\{([^}]*)\}/g)].map((m) => m[1]).join(' ');
   assert.ok(!/overflow\s*:\s*hidden/.test(card),
     'a blanket overflow:hidden on the card clips the name and the sold amount');
+
+  // overflow-x:hidden with overflow-y unset is not a legal pair — the visible
+  // axis computes to `auto` and the card becomes a scroll container. On a
+  // projector that is a scrollbar over content nobody can reach.
+  if (/overflow-x\s*:\s*hidden/.test(card)) {
+    assert.fail('overflow-x:hidden makes the card scroll vertically; use clip: ' + card);
+  }
+  if (/overflow-x\s*:\s*clip/.test(card)) {
+    assert.ok(/overflow-y\s*:\s*visible/.test(card),
+      'overflow-x:clip must state overflow-y:visible explicitly: ' + card);
+  }
 });
 
 test('standings scale from 6 teams to 20 without a fixed row count', async () => {
   // The row/column shape used to be hardcoded at "six rows, then a new column".
   // Fine at 6 and 12; at 20 that is four columns, which will not fit across a
   // 1024px projector beside the tallies. Columns are now bounded at ten rows.
+  // Eight per column, three columns maximum. Ten per column produced a
+  // discontinuity: 10 teams became one column of ten at full size, TALLER than
+  // 11 teams, and overflowed the strip on a laptop with browser chrome.
   const shapes = [
     { teams: 6,  rows: 6,  cols: 1, density: 'normal' },
+    { teams: 10, rows: 5,  cols: 2, density: 'compact' },
     { teams: 12, rows: 6,  cols: 2, density: 'compact' },
-    { teams: 20, rows: 10, cols: 2, density: 'tight' },
+    { teams: 20, rows: 7,  cols: 3, density: 'tight' },
     { teams: 30, rows: 10, cols: 3, density: 'tight' }
   ];
 
@@ -641,9 +659,15 @@ test('standings scale from 6 teams to 20 without a fixed row count', async () =>
     assert.strictEqual(cells.length, want.teams,
       want.teams + ' teams all render');
 
+    // A CUSTOM PROPERTY, not grid-template-rows. An inline grid-template-rows
+    // beats every stylesheet rule including media queries, which silently
+    // disabled the portrait layout.
     const list = oneByClass(env.root(), 'display__teams');
-    assert.strictEqual(list.style.gridTemplateRows, 'repeat(' + want.rows + ', auto)',
-      want.teams + ' teams -> ' + want.rows + ' rows, got ' + list.style.gridTemplateRows);
+    assert.strictEqual(list.style.getPropertyValue('--auto-rows'), String(want.rows),
+      want.teams + ' teams -> ' + want.rows + ' rows, got ' +
+      list.style.getPropertyValue('--auto-rows'));
+    assert.ok(!list.style.gridTemplateRows,
+      'rows must not be set inline, or the portrait media query can never win');
 
     const box = oneByClass(env.root(), 'display__teams-box');
     assert.strictEqual(box.dataset.columns, String(want.cols),

@@ -727,16 +727,35 @@ const DisplayPage = {
     //
     // Height is the cheaper axis here — the block is bottom-aligned and the
     // stage above it is what needs the room, not the strip.
-    const perColumn = 10;
-    const cols = Math.max(1, Math.ceil(rows.length / perColumn));
+    // Eight per column, capped at three columns. Eight, not ten, because ten
+    // produced a discontinuity nobody would predict: 10 teams became ONE column
+    // of ten rows at full size — TALLER than 11 teams, which became two columns
+    // of six at a smaller size. On a laptop with browser chrome that tallest
+    // case overflowed the strip and the last team was never seen.
+    //
+    //    6 -> 1 x 6      12 -> 2 x 6      20 -> 3 x 7      30 -> 3 x 10
+    const perColumn = 8;
+    const maxCols = 3;
+    const cols = Math.min(maxCols, Math.max(1, Math.ceil(rows.length / perColumn)));
     const rowCount = Math.ceil(rows.length / cols);
-    list.style.gridTemplateRows = 'repeat(' + rowCount + ', auto)';
+
+    // A CUSTOM PROPERTY, not grid-template-rows directly.
+    //
+    // An inline grid-template-rows beats every stylesheet rule including one
+    // inside a media query, so setting it here silently killed the portrait
+    // rule added alongside it — a portrait-mounted projector kept the tall
+    // layout on the layout with the least vertical room. CSS reads this value
+    // through a var() it can override.
+    list.style.setProperty('--auto-rows', String(rowCount));
 
     // Drives the type scale. Past a dozen teams the rows have to give up some
     // size to stay inside the strip; CSS decides how much.
     if (state.el.teamsBox) {
+      // Tied to how tall the block actually gets, which is rowCount — not the
+      // raw team count, which is what made 10 teams render larger than 11.
       state.el.teamsBox.dataset.density =
-        rows.length > 18 ? 'tight' : (rows.length > 10 ? 'compact' : 'normal');
+        (rowCount > 8 || rows.length > 18) ? 'tight'
+          : ((rowCount > 6 || rows.length > 8) ? 'compact' : 'normal');
       state.el.teamsBox.dataset.columns = String(cols);
     }
 
