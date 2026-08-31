@@ -1,0 +1,208 @@
+/**
+ * watch.css — the public live-viewer page.
+ * Owner: this file. Scoped under body[data-route="watch"] throughout.
+ *
+ * This is an ORDINARY, SCROLLABLE page — not a projector, not an OBS overlay.
+ * It reuses app.css's shared tokens (--bg, --ink, --status-*-bg, .status,
+ * .panel, .banner, .spinner) rather than inventing a second visual language.
+ */
+
+body[data-route="watch"] .watch {
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+body[data-route="watch"] .watch__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+body[data-route="watch"] .watch__logo {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.4rem;
+  object-fit: cover;
+  flex: 0 0 auto;
+}
+body[data-route="watch"] .watch__title {
+  margin: 0;
+  font-size: 1.4rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route="watch"] .watch__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-weight: 800;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  background: rgba(21, 128, 61, 0.12);
+  color: #15803D;
+  flex: 0 0 auto;
+}
+body[data-route="watch"] .watch__live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #15803D;
+}
+body[data-route="watch"] .watch__live[data-state="reconnecting"] {
+  background: rgba(180, 83, 9, 0.12);
+  color: #B45309;
+}
+body[data-route="watch"] .watch__live[data-state="reconnecting"] .watch__live-dot {
+  background: #B45309;
+}
+body[data-route="watch"] .watch__live[data-state="stopped"],
+body[data-route="watch"] .watch__live[data-state="connecting"] {
+  background: rgba(71, 85, 105, 0.12);
+  color: #475569;
+}
+body[data-route="watch"] .watch__live[data-state="stopped"] .watch__live-dot,
+body[data-route="watch"] .watch__live[data-state="connecting"] .watch__live-dot {
+  background: #475569;
+}
+
+/* ---- video slot ---- */
+body[data-route="watch"] .watch__video {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #0B0F14;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  margin-bottom: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+body[data-route="watch"] .watch__video-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+body[data-route="watch"] .watch__video-empty {
+  margin: 0;
+  padding: 1rem;
+  color: #C8D2DC;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* ---- waiting / closed message ---- */
+body[data-route="watch"] .watch__waiting {
+  padding: 2rem 1rem;
+  text-align: center;
+  border: 1px dashed var(--line, #D8DEE4);
+  border-radius: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+body[data-route="watch"] .watch__waiting h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.1rem;
+}
+body[data-route="watch"] .watch__waiting p { margin: 0; color: var(--ink-muted, #5B6572); }
+
+/* ---- current player card ---- */
+body[data-route="watch"] .watch__card {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem;
+  border-radius: 0.6rem;
+  background: var(--surface, #F2F5F8);
+  margin-bottom: 1.25rem;
+}
+body[data-route="watch"] .watch__photo-box {
+  width: 5.5rem;
+  height: 5.5rem;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  flex: 0 0 auto;
+  background: #E4E9EE;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+body[data-route="watch"] .watch__photo { width: 100%; height: 100%; object-fit: cover; object-position: 50% 30%; }
+body[data-route="watch"] .watch__photo-empty { font-size: 0.75rem; color: #7A8794; }
+
+body[data-route="watch"] .watch__info { min-width: 0; }
+body[data-route="watch"] .watch__serial { margin: 0; font-weight: 800; color: #2563EB; font-size: 0.85rem; }
+body[data-route="watch"] .watch__name { margin: 0.15rem 0 0; font-size: 1.5rem; line-height: 1.15; }
+body[data-route="watch"] .watch__meta {
+  margin: 0.15rem 0 0;
+  color: var(--ink-muted, #5B6572);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.85rem;
+}
+body[data-route="watch"] .watch__result {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+}
+body[data-route="watch"] .watch__amount { font-weight: 800; color: #15803D; font-size: 1.15rem; }
+body[data-route="watch"] .watch__team { color: var(--ink-muted, #5B6572); }
+
+/* ---- teams grid ---- */
+body[data-route="watch"] .watch__teams-box { margin-bottom: 1.25rem; }
+body[data-route="watch"] .watch__teams-box h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+body[data-route="watch"] .watch__teams {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+body[data-route="watch"] .watch__team-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--surface, #F2F5F8);
+}
+body[data-route="watch"] .watch__team-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body[data-route="watch"] .watch__team-purse { font-weight: 800; color: #15803D; font-size: 1rem; margin-top: 0.15rem; }
+body[data-route="watch"] .watch__team-count { color: var(--ink-muted, #5B6572); font-size: 0.85rem; }
+
+/* ---- tallies ---- */
+body[data-route="watch"] .watch__tallies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--line, #D8DEE4);
+}
+body[data-route="watch"] .watch__tally { display: flex; flex-direction: column; align-items: center; min-width: 4.5rem; }
+body[data-route="watch"] .watch__tally-value { font-size: 1.3rem; font-weight: 800; }
+body[data-route="watch"] .watch__tally-label {
+  font-size: 0.75rem;
+  color: var(--ink-muted, #5B6572);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 30rem) {
+  body[data-route="watch"] .watch__card { flex-direction: column; align-items: flex-start; }
+}

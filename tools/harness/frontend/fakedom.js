@@ -28,6 +28,24 @@ class ClassList {
   }
   remove(name) { this._write(this._list().filter((n) => n !== name)); }
   contains(name) { return this._list().indexOf(name) !== -1; }
+  /**
+   * Matches real DOM semantics: toggle(name) flips it; toggle(name, force)
+   * sets it to exactly `force`. Added because a page calling the real,
+   * standard classList.toggle(name, force) — which is what stream.js does to
+   * mark the UNSOLD variant of its sting — threw a TypeError against this
+   * fake, silently aborting the rest of the caller's function and making the
+   * failure look like a stream.js bug rather than a gap in the fake.
+   * @param {string} name
+   * @param {boolean=} force
+   * @return {boolean} whether the class is present afterwards
+   */
+  toggle(name, force) {
+    const has = this.contains(name);
+    const want = (force === undefined) ? !has : !!force;
+    if (want && !has) this.add(name);
+    else if (!want && has) this.remove(name);
+    return want;
+  }
 }
 
 class TextNode {

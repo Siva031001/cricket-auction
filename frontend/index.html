@@ -83,6 +83,8 @@
 <link rel="stylesheet" href="css/organiser.css">
 <link rel="stylesheet" href="css/auction.css">
 <link rel="stylesheet" href="css/display.css">
+<link rel="stylesheet" href="css/stream.css">
+<link rel="stylesheet" href="css/watch.css">
 </head>
 <body data-route="boot">
 
@@ -117,21 +119,27 @@
       3. image.js                ImageTool       uses nothing (canvas only)
       4. ui.js                   UI              uses nothing (DOM only)
       5. router.js               Router          uses CONFIG
-      6. pages/register.js       RegisterPage    uses API, UI, ImageTool, Router
-      7. pages/admin-login.js    AdminLoginPage  uses API, UI, Router
-      8. pages/admin-tournament.js AdminTournamentPage
-                                                 uses API, UI, ImageTool, Router
-      9. pages/admin-payments.js AdminPaymentsPage
-                                                 uses API, UI, Router, App
-     10. pages/admin-players.js  AdminPlayersPage
-                                                 uses API, UI, Router, App
-     11. app.js                  App             uses all of the above; LAST
+      6. offline.js               Offline         uses nothing at load time
+      7. broadcast.js             Broadcast       uses API, CONFIG, UI (money
+                                                  fallback only) — the shared
+                                                  poll/backoff engine behind
+                                                  the projector-alias, OBS
+                                                  overlay and public viewer
+      8. pages/*.js               each page       uses whichever of the above
+                                                  it needs, plus App from
+                                                  inside render() only — see
+                                                  below for why order among
+                                                  the page files does not
+                                                  matter
+     last. app.js                 App             uses all of the above; LAST
 
-    The Phase 2 pages sit ABOVE app.js like every other page: they only
-    reference App from inside render(), which cannot run before app.js has
-    loaded and the router has dispatched. Loading them after app.js would
-    work too, but would break the "page files, then the shell" rule that
-    makes this list readable.
+    Every page file sits ABOVE app.js: each only references App from inside
+    render(), which cannot run before app.js has loaded and the router has
+    dispatched. Loading them after app.js would work too, but would break the
+    "page files, then the shell" rule that makes this list readable. Order
+    AMONG the page files does not matter — none of them reference each other
+    — except that stream.js and watch.js must come after broadcast.js, which
+    they do simply by broadcast.js being listed before the pages/ block.
 
     A page file that fails to load does NOT break the app. app.js looks its
     global up by name at render time and shows a readable "screen failed to
@@ -145,6 +153,7 @@
   <script defer src="js/ui.js"></script>
   <script defer src="js/router.js"></script>
   <script defer src="js/offline.js"></script>
+  <script defer src="js/broadcast.js"></script>
   <script defer src="js/pages/register.js"></script>
   <script defer src="js/pages/admin-login.js"></script>
   <script defer src="js/pages/admin-tournament.js"></script>
@@ -157,6 +166,8 @@
   <script defer src="js/pages/organiser-dashboard.js"></script>
   <script defer src="js/pages/organiser-auction.js"></script>
   <script defer src="js/pages/display.js"></script>
+  <script defer src="js/pages/stream.js"></script>
+  <script defer src="js/pages/watch.js"></script>
   <script defer src="js/app.js"></script>
 </body>
 </html>

@@ -16,9 +16,12 @@
  *   /admin/dashboard               AdminTournamentPage  js/pages/admin-tournament.js
  *   /admin/payments                AdminPaymentsPage    js/pages/admin-payments.js
  *   /admin/players                 AdminPlayersPage     js/pages/admin-players.js
- *   /organiser/dashboard           Phase 3 placeholder
- *   /organiser/auction             Phase 4 placeholder
- *   /auction/:tournamentId/display Phase 5 placeholder
+ *   /organiser/dashboard           OrganiserDashboardPage js/pages/organiser-dashboard.js
+ *   /organiser/auction             OrganiserAuctionPage   js/pages/organiser-auction.js
+ *   /auction/:tournamentId/display DisplayPage            js/pages/display.js
+ *   /projector/:tournamentId       DisplayPage (alias — same page, second URL)
+ *   /stream/:tournamentId          StreamPage             js/pages/stream.js
+ *   /watch/:tournamentId           WatchPage              js/pages/watch.js
  *
  * Page module convention (CONTRACTS-PHASE1.md §4):
  *   const RegisterPage = { render: function (ctx) { ...fills App.root... } };
@@ -300,6 +303,43 @@ const App = {
       // Public by design. Its credential is the tournament's display_token in
       // ?k=, because this runs unattended on a venue laptop with nobody signed
       // in. Read-only: it offers no controls and carries no personal data.
+    },
+    {
+      // Same page, second URL. The "Live Streaming & Broadcast Overlay"
+      // enhancement's spec (§2D "Projector Display") is, feature for feature,
+      // what /auction/:id/display already is — so this is an alias, not a
+      // second implementation. display.js is completely unmodified by this
+      // route existing; there was never a reason to duplicate a screen a few
+      // hundred people already rely on working exactly as it does today.
+      path: '/projector/:tournamentId',
+      global: 'DisplayPage',
+      file: 'js/pages/display.js',
+      routeKey: 'display',
+      title: 'Auction display',
+      admin: false
+    },
+
+    /* ---- Broadcast enhancement: OBS overlay and the public viewer ---- */
+    {
+      // OBS Browser Source target. PUBLIC, transparent-background, read-only —
+      // see js/pages/stream.js's header for the full reasoning. Credential is
+      // the same display_token every other broadcast screen already uses.
+      path: '/stream/:tournamentId',
+      global: 'StreamPage',
+      file: 'js/pages/stream.js',
+      routeKey: 'stream',
+      title: 'Auction overlay',
+      admin: false
+    },
+    {
+      // A normal, scrollable page anyone can open to follow the auction.
+      // Same data source and token as the projector; see js/pages/watch.js.
+      path: '/watch/:tournamentId',
+      global: 'WatchPage',
+      file: 'js/pages/watch.js',
+      routeKey: 'watch',
+      title: 'Live auction',
+      admin: false
     }
   ],
 
@@ -513,6 +553,12 @@ const App = {
           break;
         case 'DisplayPage':
           if (typeof DisplayPage !== 'undefined') return DisplayPage;
+          break;
+        case 'StreamPage':
+          if (typeof StreamPage !== 'undefined') return StreamPage;
+          break;
+        case 'WatchPage':
+          if (typeof WatchPage !== 'undefined') return WatchPage;
           break;
         default:
           break;

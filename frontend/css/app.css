@@ -94,6 +94,15 @@
    page stylesheet would make the same bar look different depending on which
    screen you were on — which is precisely how an admin stops reading it.
 
+   Owned by css/stream.css — the OBS Browser Source overlay only: the four
+   [data-layout] variants, the transparent-body override, the player card
+   panel, the SOLD/UNSOLD sting, the ticker and tallies. Scope under
+   body[data-route="stream"]. Reuses .status/.status--* from HERE unchanged.
+
+   Owned by css/watch.css — the public viewer page only: the branded header,
+   the video slot, and the (non-projector, normal scrollable page) team grid
+   and tallies. Scope under body[data-route="watch"].
+
    Rule of thumb: if a second page would plausibly want it, it belongs
    here. Later phases must reuse these names rather than invent parallel
    ones — two vocabularies for the same button is how a stylesheet rots.
