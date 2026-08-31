@@ -41,7 +41,7 @@
  *   1. THE CONFIRM DIALOG IS THE MAIN SAFETY FEATURE (DESIGN.md §6.5a).
  *      Nothing is ever sold without first showing the arithmetic:
  *          Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000?
- *          Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.
+ *          Leaves ₹4,75,000 for 3 more slots.
  *      One extra zero during a live auction is the most damaging and least
  *      recoverable mistake available, and this line costs nothing.
  *
@@ -2537,7 +2537,7 @@ const OrganiserAuctionPage = {
    * THE SINGLE MOST VALUABLE GUARD ON THIS SCREEN (DESIGN.md §6.5a).
    *
    *   Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000?
-   *   Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.
+   *   Leaves ₹4,75,000 for 3 more slots.
    *
    * No judgement, just the arithmetic. The organiser reads it in a second and
    * catches their own mistake. The per-slot division is Math.floor, the same
@@ -2559,9 +2559,13 @@ const OrganiserAuctionPage = {
 
     let leaves;
     if (slotsAfter > 0) {
+      // No per-slot average. Every player sells for a different amount, so
+      // dividing the purse by empty slots states a price that does not exist.
+      // The two true figures — what is left and how many slots — are enough for
+      // the organiser to judge it, and the server's SQUAD_AT_RISK advisory
+      // quotes the cheapest sale that has actually happened.
       leaves = 'Leaves ' + OrganiserAuctionPage._money(after) + ' for ' + slotsAfter +
-        ' ' + (slotsAfter === 1 ? 'slot' : 'slots') + ' — ' +
-        OrganiserAuctionPage._money(Math.floor(after / slotsAfter)) + ' per slot.';
+        ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') + '.';
     } else if (slotsAfter === 0) {
       leaves = 'That completes the squad and leaves ' +
         OrganiserAuctionPage._money(after) + ' unspent.';

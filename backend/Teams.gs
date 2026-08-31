@@ -10,8 +10,9 @@
  *                      from the tournament defaults when they are omitted.
  *   team.createBatch   ORGANISER or ADMIN. The main path: 8 names, one shared
  *                      purse and squad size, one locked section, one append.
- *   team.list          ORGANISER or ADMIN. The team dashboard, including
- *                      per_slot_remaining.
+ *   team.list          ORGANISER or ADMIN. The team dashboard: purse total,
+ *                      used and remaining, plus players_count / max_players
+ *                      and slots_remaining.
  *   team.squad         ORGANISER or ADMIN. The players one team has bought.
  *   team.update        ORGANISER (until the first sale) or ADMIN (any time).
  *   team.delete        ADMIN. Refuses with TEAM_NOT_EMPTY when the team has
@@ -578,10 +579,10 @@ const Teams = {
    * cache Phase 4 maintains inside the sale lock — see the file header for why
    * nothing here recomputes them.
    *
-   * per_slot_remaining is floor(purse_remaining / slots_remaining), or null
-   * when the squad is full. Because prices are unpredictable (DESIGN.md §6.5a)
-   * this is the number that actually tells an organiser whether a team is in
-   * trouble, so it is computed here rather than left to the organiser to divide
+   * There is deliberately no per-slot average. Prices are unpredictable
+   * (DESIGN.md §6.5a), so remaining purse divided by empty slots reads as a
+   * price per player when no such price exists. purse_remaining and
+   * slots_remaining are the two honest numbers and both are returned
    * in their head mid-auction.
    *
    * @param {!Object} team a Teams row
@@ -596,13 +597,14 @@ const Teams = {
     const playersCount = Util.toInt(team.players_count, 0);
 
     // Clamped at zero. An over-full squad can only come from corrupt data, and
-    // a negative slot count would turn per_slot_remaining into a nonsense
-    // positive number by dividing two negatives.
+    // a negative slot count would produce nonsense downstream.
     const slotsRemaining = Math.max(0, maxPlayers - playersCount);
 
-    // null, not 0: "nothing left to spend per slot" and "no slots left to spend
-    // on" are different facts, and the dashboard renders them differently.
-    const perSlot = slotsRemaining > 0 ? Math.floor(purseRemaining / slotsRemaining) : null;
+    // per_slot_remaining was removed on the tournament owner's instruction:
+    // every player sells for a different amount, so dividing the remaining
+    // purse by empty slots presents an average as though it were a price. It
+    // was misleading rather than merely redundant, and it was on every screen.
+    // The honest figures are purse_remaining and slots_remaining, both below.
 
     const logoId = Teams._str(team.logo_file_id);
 
@@ -619,11 +621,7 @@ const Teams = {
       purse_remaining_display: Util.formatINR(purseRemaining),
       players_count: playersCount,
       max_players: maxPlayers,
-      slots_remaining: slotsRemaining,
-      per_slot_remaining: perSlot,
-      // Blank rather than a word like "full", so the page decides how to show
-      // it. Every other _display field in this project is pure formatting.
-      per_slot_remaining_display: perSlot === null ? '' : Util.formatINR(perSlot)
+      slots_remaining: slotsRemaining
     };
   },
 
@@ -731,8 +729,8 @@ const Teams = {
    *
    * There is deliberately no "this purse is too small for this squad" guard
    * (CONTRACTS-PHASE3 §4): prices are unpredictable, so any threshold would be
-   * a guess. team.list exposing per_slot_remaining gives the organiser the
-   * honest number continuously instead.
+   * a guess. team.list returns purse_remaining and slots_remaining so the
+   * organiser can see the real position continuously instead.
    *
    * @param {!Object} payload {tournamentId, teamName, ownerName, purseTotal, maxPlayers, logo, ua}
    * @param {!Object} session the resolved ORGANISER or ADMIN session

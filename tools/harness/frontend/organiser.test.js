@@ -610,7 +610,7 @@ async function testBatchRowsAddAndRemove() {
 }
 
 async function testPerSlotRemaining() {
-  console.log('\n[7] ₹ per empty slot renders, and is marked when it drops low');
+  console.log('\n[7] slots left renders, and a squeezed team is still flagged');
   reset();
 
   await renderDashboard(listResponse([
@@ -627,18 +627,21 @@ async function testPerSlotRemaining() {
   ]));
 
   const headers = byTag(byTag(App.root, 'THEAD')[0], 'TH').map((th) => th.textContent);
-  has(headers.join('|'), '₹ per empty slot', 'the column is labelled in plain words');
+  has(headers.join('|'), 'Slots left', 'the column reports slots left, not a per-slot price');
   eq(byTag(byTag(App.root, 'THEAD')[0], 'TH').filter((th) => th.scope === 'col').length,
     headers.length, 'every header cell is th scope="col"');
 
   const cells = byClass(App.root, 'org-teams__slot');
   eq(cells.length, 4, 'one per-slot cell per team');
 
-  has(cells[0].textContent, '₹40,000', "the server's formatted figure is shown");
+  has(cells[0].textContent, 'slots', 'the slot count is shown, not a rupee figure');
+  ok(cells[0].textContent.indexOf('₹') === -1,
+    'and no per-slot rupee figure: every player sells for a different amount');
   has(cells[0].className, 'org-teams__slot--ok', 'a comfortable team is not flagged');
   lacks(cells[0].textContent, 'Low', 'and carries no warning word');
 
-  has(cells[1].textContent, '₹14,285', 'the squeezed team shows its figure');
+  has(cells[1].textContent, '7 slots', 'the squeezed team shows its slots left');
+  ok(cells[1].textContent.indexOf('₹') === -1, 'and never a per-slot rupee figure');
   has(cells[1].className, 'org-teams__slot--low', 'the squeezed team is flagged low');
   has(cells[1].textContent, 'Low', 'the flag is a WORD, not only a colour');
 

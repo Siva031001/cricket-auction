@@ -710,7 +710,7 @@ test('search: auction.search is read-only and choosing a row calls that serial',
  * C. The confirm dialog — the main safety feature
  * ---------------------------------------------------------------------- */
 
-test('confirm: the dialog shows the exact remaining purse and per-slot figures (DESIGN §6.5a)', async () => {
+test('confirm: the dialog shows the exact remaining purse and slot count (DESIGN §6.5a)', async () => {
   const env = await open({
     handlers: {
       'auction.markSold': () => ({
@@ -725,8 +725,13 @@ test('confirm: the dialog shows the exact remaining purse and per-slot figures (
   // The live consequence line, before anything is pressed.
   assert.strictEqual(els.preview.textContent,
     'Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000? ' +
-    'Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.',
+    'Leaves ₹4,75,000 for 3 more slots.',
     'the arithmetic must be exact: ' + els.preview.textContent);
+
+  // No per-slot average. Every player sells for a different amount, so
+  // remaining-purse-over-empty-slots states a price that does not exist.
+  assert.ok(els.preview.textContent.indexOf('per slot') === -1,
+    'the preview must not quote a per-slot price');
 
   els.go.click();
   await flush();
@@ -735,8 +740,8 @@ test('confirm: the dialog shows the exact remaining purse and per-slot figures (
   assert.strictEqual(env.confirms[0].title,
     'Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000?');
   assert.strictEqual(env.confirms[0].body,
-    'Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.',
-    'remaining purse ₹5,50,000 - ₹75,000 = ₹4,75,000 over 3 remaining slots');
+    'Leaves ₹4,75,000 for 3 more slots.',
+    'remaining purse ₹5,50,000 - ₹75,000 = ₹4,75,000, with 3 slots to fill');
 });
 
 test('confirm: answering no sends nothing at all', async () => {
@@ -755,12 +760,12 @@ test('confirm: the last slot and an overspend are both described honestly', asyn
 
   // Madurai Kings: 9 of 12, ₹3,20,000 left. A sale leaves 2 slots.
   let els = enterSale(env, 'TM_2', 100000);
-  assert.ok(/Leaves ₹2,20,000 for 2 slots — ₹1,10,000 per slot\./.test(els.preview.textContent),
+  assert.ok(/Leaves ₹2,20,000 for 2 more slots\./.test(els.preview.textContent),
     els.preview.textContent);
 
   // More than the purse: the line still tells the truth rather than hiding it.
   els = enterSale(env, 'TM_2', 400000);
-  assert.ok(/Leaves -₹80,000 for 2 slots/.test(els.preview.textContent),
+  assert.ok(/Leaves -₹80,000 for 2 more slots/.test(els.preview.textContent),
     'an overspend is shown, not silently clamped: ' + els.preview.textContent);
 });
 

@@ -562,13 +562,21 @@ const Auction = {
     const slotsAfter = Auction._slotsRemaining(team) + Util.toInt(a.countDelta, 0) - 1;
     const purseAfter = Auction._purseRemaining(team) + Util.toInt(a.purseDelta, 0) - amount;
     if (stats.count > 0 && slotsAfter > 0) {
+      // Compared against the CHEAPEST SALE THAT ACTUALLY HAPPENED, not an
+      // assumed price. The message deliberately quotes that figure and the
+      // total it implies, rather than a purse-divided-by-slots average: an
+      // average reads as a price per player, and no such price exists here
+      // (DESIGN.md §6.5a). Same trigger, honest wording.
       const perSlot = Math.floor(purseAfter / slotsAfter);
       if (perSlot < stats.lowest) {
+        const needed = stats.lowest * slotsAfter;
         out.push({
           code: AUCTION_WARN.SQUAD_AT_RISK,
           message: 'This leaves ' + name + ' ' + Util.formatINR(purseAfter) + ' for ' + slotsAfter +
-            ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') + ' — ' + Util.formatINR(perSlot) +
-            ' each, below the cheapest sale so far of ' + Util.formatINR(stats.lowest) + '.'
+            ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') + '. The cheapest sale so far was ' +
+            Util.formatINR(stats.lowest) + ', so filling ' +
+            (slotsAfter === 1 ? 'it' : 'them') + ' at that price would need about ' +
+            Util.formatINR(needed) + '.'
         });
       }
     }
@@ -1865,8 +1873,7 @@ const Auction = {
       purse_remaining_display: Util.formatINR(remaining),
       players_count: Util.toInt(team.players_count, 0),
       max_players: Util.toInt(team.max_players, 0),
-      slots_remaining: slots,
-      per_slot_remaining_display: slots > 0 ? Util.formatINR(Math.floor(remaining / slots)) : 'Squad full'
+      slots_remaining: slots
     };
   },
 
