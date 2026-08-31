@@ -463,3 +463,10 @@ body[data-route="admin-login"] .panel.admin-login {
 body[data-route="admin-login"] .banner__mark {
   display: none;
 }
+
+/* The "running a tournament, in order" list on the dashboard. Each step that
+   has a screen is a link; the first step (share the link) is not, because it
+   happens on this page. */
+body[data-route="admin-dashboard"] .later__link {
+  font-weight: 700;
+}
