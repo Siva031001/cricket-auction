@@ -1917,9 +1917,17 @@ const mutations = [
   },
   {
     name: 'M8 swallow a pack download failure -> the NO_IMAGE_FETCHER test must fail',
+    // `false && {...}` evaluates to false, so packError is falsy and the
+    // warnings never render — a real "swallow the error" mutation.
+    //
+    // The previous version spliced in `(0) ? {` and left a conditional with no
+    // else branch, so the mutant did not parse. A SyntaxError makes the mutation
+    // look detected while proving nothing about the assertion: any test at all
+    // would have "caught" it. A mutation has to produce runnable code that is
+    // merely wrong.
     mutate: (s) => s.replace(
       '      state.packError = {\n        code: code,',
-      '      state.packError = (0) ? { code: code,'),
+      '      state.packError = false && {\n        code: code,'),
     check: async (mutate) => {
       const env = await open({ mutate: mutate, handlers: packHandlers() });
       await flush(6);

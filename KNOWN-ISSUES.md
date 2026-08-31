@@ -92,9 +92,20 @@ So `Offline.sync(callFn)` takes an injected callback precisely so the caller can
 
 **Test in a browser against the real deployment.** If the bytes are unreadable, the fallback is to route images through the Apps Script API as base64 — slower, but it works.
 
-### 14. Two integration wires still open
-- **`API.getBytes(url)`** does not exist in `api.js`. Without it, `Offline.downloadPack` cannot cache photos (see item 13). Alternative: call `Offline.setTransport({imageFn})` at startup.
-- **The display snapshot carries no roster.** `display.js` pre-warms each thumbnail the first time that player appears, which is best-effort. Adding `roster: [{photo_thumb_url}]` to the `auction.displayState` snapshot would make the "instant reveal" guarantee complete.
+### 14. Offline pack: wired, with one honest limitation
+The **Download offline pack** control now exists on the auction console, with progress, pack status, and a partial pack reported as PARTIAL rather than ready.
+
+Still open, and it is item 13: photograph bytes may not be readable from Drive cross-origin. When they are not, the console says so plainly — the pack holds player details only, names and serials work offline, pictures do not. It never claims a pack is ready when the photos are missing.
+
+**The display snapshot still carries no roster.** `display.js` pre-warms each thumbnail the first time that player appears, which is best-effort. Adding `roster: [{photo_thumb_url}]` to the `auction.displayState` snapshot would make the "instant reveal" guarantee complete.
+
+### 17. Two harness assertions were passing for the wrong reason — RESOLVED
+Worth recording, because both are the failure mode that makes a test suite worthless:
+
+1. **Mutation M8** in `organiser-auction.test.js` spliced in code that did not parse. A `SyntaxError` made the mutant look detected while proving nothing — *any* test would have "caught" it. Now a semantically-wrong-but-runnable mutation.
+2. **The setup-warning assertion** in `router-smoke.test.js` counted `.banner--error` after visiting a route that had no page module, so it was detecting the missing-module error panel, not a setup warning. The harness never rendered one. It now renders the warning and asserts it survives navigation.
+
+A test that passes against broken code is worse than no test.
 
 ### 15. Withdrawn players in the player export
 The 11 CSV columns are fixed by the requirement and none carries withdrawal, so Payment Status renders as `Verified (withdrawn)`. A 12th column would be cleaner if the format can change.

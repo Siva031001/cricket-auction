@@ -844,6 +844,11 @@ const OrganiserAuctionPage = {
     els.packPhase = document.createElement('p');
     els.packPhase.className = 'auc-pack__phase';
     els.packPhase.setAttribute('aria-live', 'polite');
+    // Restored from state, not left blank. This element is recreated on every
+    // re-render, and _loadPackStatus re-renders immediately after a download
+    // finishes — so writing "Finished." straight to the DOM lost it before the
+    // organiser could read it. The text lives in state and the DOM follows.
+    els.packPhase.textContent = state.packPhaseText || '';
     box.appendChild(els.packPhase);
 
     els.packWarnings = document.createElement('div');
@@ -952,7 +957,12 @@ const OrganiserAuctionPage = {
     if (state.packBusy && state.packProgress) {
       els.packProgress.appendChild(state.packProgress.el);
     } else {
-      els.packPhase.textContent = '';
+      // Show the last thing that happened, not nothing. This used to blank the
+      // line as soon as packBusy went false — which is the instant the download
+      // finishes — so "Finished." was erased before anyone could read it. The
+      // organiser needs to know the pack completed, and if it did not complete
+      // they need to know that even more.
+      els.packPhase.textContent = state.packPhaseText || '';
     }
 
     /* ---- warnings and the last failure --------------------------- */
@@ -1035,14 +1045,16 @@ const OrganiserAuctionPage = {
       const total = Number(info && info.total) || 0;
       const done = Number(info && info.done) || 0;
       state.packProgress.set(total > 0 ? (done / total) * 100 : 0);
-      state.els.packPhase.textContent = String((info && info.label) || '');
+      state.packPhaseText = String((info && info.label) || '');
+      state.els.packPhase.textContent = state.packPhaseText;
     }, opts).then(function (res) {
       state.packBusy = false;
       state.packProgress = null;
       if (!OrganiserAuctionPage._current(state)) return;
-      state.els.packPhase.textContent = (res && res.complete)
+      state.packPhaseText = (res && res.complete)
         ? 'Finished.'
         : 'Finished, but the pack is not complete.';
+      state.els.packPhase.textContent = state.packPhaseText;
       OrganiserAuctionPage._loadPackStatus(state);
     }).catch(function (err) {
       state.packBusy = false;

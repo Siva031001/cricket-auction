@@ -543,8 +543,21 @@ docListeners.DOMContentLoaded.forEach((fn) => fn());
   check('an unauthenticated organiser is sent to sign in',
     route() === 'admin-login', route());
 
-  check('the setup warning rendered at boot is still on the page',
-    byClass('banner--error').length >= 1);
+  // The boot-time "API_BASE_URL is not set" warning must survive navigation:
+  // it is inserted into <body> above #app precisely so a route change cannot
+  // wipe it, and an unconfigured deployment fails every call with a confusing
+  // network error otherwise.
+  //
+  // This assertion used to just count `.banner--error` after visiting
+  // /organiser/dashboard, and passed only because that route had no page module
+  // and the missing-module ERROR PANEL carries the same class. It never rendered
+  // a setup warning at all. Now it renders one explicitly and then navigates.
+  run('App.renderSetupWarning();');
+  const warnedBefore = byClass('banner--error').length;
+  go('/');
+  check('the setup warning survives a route change',
+    warnedBefore >= 1 && byClass('banner--error').length >= 1,
+    'before=' + warnedBefore + ' after=' + byClass('banner--error').length);
 
   setUrl('/cricket-auction/?ca_redirect=%2Fadmin%2Fplayers%3Ft%3DTRN_abc123');
   run('App.restoreDeepLink();');
