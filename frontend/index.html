@@ -1,6 +1,25 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!--
+  BASE HREF — this must match CONFIG.BASE_PATH in js/config.js, with a trailing
+  slash.
+
+  WHY IT IS HERE. Every script and stylesheet below is referenced with a RELATIVE
+  path ("js/app.js"). A browser resolves those against the URL of the document,
+  not against the site root. This app uses path routing, so the document URL for
+  the sign-in screen is /cricket-auction/admin/login — and "js/app.js" resolves
+  to /cricket-auction/admin/js/app.js, which does not exist.
+
+  The result was a completely blank page on every route deeper than one segment,
+  on GitHub Pages exactly as much as on localhost. Only /cricket-auction/ itself
+  worked, which is why it went unnoticed.
+
+  <base> fixes all of them at once: relative URLs resolve against this instead of
+  the document. If you deploy under a different path, change this AND
+  CONFIG.BASE_PATH together.
+-->
+<base href="/cricket-auction/">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0B0F14">

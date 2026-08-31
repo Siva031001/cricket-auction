@@ -119,6 +119,14 @@ The 11 CSV columns are fixed by the requirement and none carries withdrawal, so 
 
 ## Deployment
 
+### 18. Relative asset paths broke every deep route — RESOLVED
+`index.html` referenced its scripts and stylesheets relatively (`src="js/app.js"`). A browser resolves those against the **document URL**, and this app uses path routing — so at `/cricket-auction/admin/login` it requested `/cricket-auction/admin/js/app.js`, which does not exist. Every asset 404'd and the page rendered blank.
+
+This was a production bug, not a local one: GitHub Pages would have behaved identically. Only `/cricket-auction/` itself worked, which is why it survived every check — the files existed, so the existence check passed; it was the *resolution* that was wrong.
+
+Fixed with `<base href="/cricket-auction/">`. **It must match `CONFIG.BASE_PATH`**, and `tools/check.js` now fails if they disagree or if relative paths appear with no base.
+
+
 ### 11. GitHub Pages Source must be "GitHub Actions"
 Pages cannot serve a `frontend/` folder from a branch. `.github/workflows/pages.yml` publishes it instead. The workflow also fails the build if `API_BASE_URL` is still the placeholder.
 
