@@ -885,7 +885,9 @@ async function testCreatedLinks() {
     slug: 'new-league',
     status: 'DRAFT',
     registrationUrl: 'https://example.github.io/cricket-auction/register/TRN_new1',
-    displayUrl: 'https://example.github.io/cricket-auction/auction/TRN_new1/display?k=DTOK'
+    displayUrl: 'https://example.github.io/cricket-auction/projector/TRN_new1?k=DTOK',
+    streamUrl: 'https://example.github.io/cricket-auction/stream/TRN_new1?k=DTOK',
+    watchUrl: 'https://example.github.io/cricket-auction/watch/TRN_new1?k=DTOK'
   }));
 
   AdminTournamentPage.render({
@@ -910,13 +912,17 @@ async function testCreatedLinks() {
   ok(!!box, 'a link box is shown after creating');
   ok(box.textContent.indexOf('Registration link') !== -1, 'registration link labelled');
   ok(box.textContent.indexOf('Projector display link') !== -1, 'projector link shown too');
+  ok(box.textContent.indexOf('OBS overlay link') !== -1, 'OBS overlay link shown too');
+  ok(box.textContent.indexOf('Public viewer link') !== -1, 'public viewer link shown too');
 
   const urlInputs = byClass(box, 'linkbox__url');
-  eq(urlInputs.length, 2, 'both URLs are in selectable boxes');
+  eq(urlInputs.length, 4, 'all four URLs are in selectable boxes');
   eq(urlInputs[0].value, 'https://example.github.io/cricket-auction/register/TRN_new1',
     'the server registration URL is used verbatim');
   ok(/[?&]k=DTOK/.test(urlInputs[1].value), 'the projector link carries the display token');
-  eq(byTag(box, 'BUTTON').filter((b) => b.textContent === 'Copy link').length, 2,
+  ok(/[?&]k=DTOK/.test(urlInputs[2].value), 'the OBS overlay link carries the display token');
+  ok(/[?&]k=DTOK/.test(urlInputs[3].value), 'the public viewer link carries the display token');
+  eq(byTag(box, 'BUTTON').filter((b) => b.textContent === 'Copy link').length, 4,
     'each link has a Copy button');
 
   // The locally built fallback matches BASE_PATH.
@@ -924,8 +930,14 @@ async function testCreatedLinks() {
     'https://example.github.io/cricket-auction/register/TRN_x',
     'the local fallback registration URL includes BASE_PATH');
   eq(AdminTournamentPage._displayUrl('TRN_x', 'k1'),
-    'https://example.github.io/cricket-auction/auction/TRN_x/display?k=k1',
+    'https://example.github.io/cricket-auction/projector/TRN_x?k=k1',
     'the local fallback projector URL carries the key');
+  eq(AdminTournamentPage._streamUrl('TRN_x', 'k1'),
+    'https://example.github.io/cricket-auction/stream/TRN_x?k=k1',
+    'the local fallback OBS overlay URL carries the key');
+  eq(AdminTournamentPage._watchUrl('TRN_x', 'k1'),
+    'https://example.github.io/cricket-auction/watch/TRN_x?k=k1',
+    'the local fallback public viewer URL carries the key');
 }
 
 async function testNoInnerHtml() {

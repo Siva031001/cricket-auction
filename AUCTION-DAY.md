@@ -23,7 +23,7 @@ Everything here assumes the tournament has already been created, payments verifi
 
 ## Setting up in the hall
 
-1. Projector laptop → open `/auction/<tournament-id>/display?k=<display token>` → press **F**.
+1. Projector laptop → open `/projector/<tournament-id>?k=<display token>` → press **F**.
 2. Organiser laptop → open `/organiser/auction`.
 3. **Tether the organiser laptop to the hotspot, not the venue wifi.** The projector can be on either; the organiser laptop is the one that must not drop.
 4. Admin sets the tournament status to **AUCTION LIVE**.

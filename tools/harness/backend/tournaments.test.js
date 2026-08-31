@@ -224,7 +224,7 @@ console.log('\n=== A. tournament.create ===');
 let T1 = null;
 t('creates a tournament and returns the contract shape', () => {
   T1 = X.Tournaments.create(base(), ADMIN);
-  eq(Object.keys(T1).sort(), ['displayUrl', 'registrationUrl', 'slug', 'status', 'tournament_id'], 'response keys');
+  eq(Object.keys(T1).sort(), ['displayUrl', 'registrationUrl', 'slug', 'status', 'streamUrl', 'tournament_id', 'watchUrl'], 'response keys');
   ok(/^TRN_[a-z0-9]{12}$/.test(T1.tournament_id), 'id shape: ' + T1.tournament_id);
   eq(T1.slug, 'chennai-premier-league', 'slug');
   eq(T1.status, 'DRAFT', 'status');
@@ -269,14 +269,20 @@ t('a colliding name gets a unique slug', () => {
 });
 t('registrationUrl / displayUrl fall back to a path when frontend_base_url is unset', () => {
   eq(T1.registrationUrl, '/register/' + T1.tournament_id, 'registrationUrl path');
-  ok(T1.displayUrl.indexOf('/auction/' + T1.tournament_id + '/display?k=') === 0, 'displayUrl path: ' + T1.displayUrl);
+  ok(T1.displayUrl.indexOf('/projector/' + T1.tournament_id + '?k=') === 0, 'displayUrl path: ' + T1.displayUrl);
+  ok(T1.streamUrl.indexOf('/stream/' + T1.tournament_id + '?k=') === 0, 'streamUrl path: ' + T1.streamUrl);
+  ok(T1.watchUrl.indexOf('/watch/' + T1.tournament_id + '?k=') === 0, 'watchUrl path: ' + T1.watchUrl);
+  ok(T1.streamUrl.indexOf(T1.displayUrl.split('?k=')[1]) !== -1, 'streamUrl carries the same token as displayUrl');
+  ok(T1.watchUrl.indexOf(T1.displayUrl.split('?k=')[1]) !== -1, 'watchUrl carries the same token as displayUrl');
 });
 t('registrationUrl / displayUrl use the Config frontend_base_url when present', () => {
   X.Repo.append('Config', { key: 'frontend_base_url', value: 'https://example.org/cricket/', updated_at: '' });
   X.Cache.invalidateConfig('frontend_base_url');
   const T = X.Tournaments.create(Object.assign(base(), { name: 'Base URL Cup' }), ADMIN);
   eq(T.registrationUrl, 'https://example.org/cricket/register/' + T.tournament_id, 'absolute registrationUrl');
-  ok(T.displayUrl.indexOf('https://example.org/cricket/auction/') === 0, 'absolute displayUrl');
+  ok(T.displayUrl.indexOf('https://example.org/cricket/projector/') === 0, 'absolute displayUrl');
+  ok(T.streamUrl.indexOf('https://example.org/cricket/stream/') === 0, 'absolute streamUrl');
+  ok(T.watchUrl.indexOf('https://example.org/cricket/watch/') === 0, 'absolute watchUrl');
   // Put it back so the rest of the suite sees the path-only behaviour.
   X.Repo.updateBy('Config', 'key', 'frontend_base_url', { value: '' });
   X.Cache.invalidateConfig('frontend_base_url');
@@ -573,6 +579,8 @@ t('ADMIN gets the whole row plus derived urls, without _row', () => {
   ok(!!g.display_token, 'admin does see the display_token');
   ok(Array.isArray(g.photo_file_ids), 'gallery parsed to an array');
   ok(g.displayUrl.indexOf('k=' + g.display_token) !== -1, 'displayUrl carries the token');
+  ok(g.streamUrl.indexOf('k=' + g.display_token) !== -1, 'streamUrl carries the token');
+  ok(g.watchUrl.indexOf('k=' + g.display_token) !== -1, 'watchUrl carries the token');
 });
 t('ORGANISER of another tournament is FORBIDDEN', () => {
   const org = { user_id: 'USR_org1', role: 'ORGANISER', tournament_id: T2.tournament_id };

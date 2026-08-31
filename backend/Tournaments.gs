@@ -425,8 +425,40 @@ const Tournaments = {
    * @return {string} absolute URL, or the path alone when no base is configured
    */
   _displayUrl(tournamentId, displayToken) {
-    return Tournaments._frontendBase() + '/auction/' + encodeURIComponent(tournamentId) +
-      '/display?k=' + encodeURIComponent(Tournaments._str(displayToken));
+    // /projector/:id, NOT /auction/:id/display. Both routes serve the exact
+    // same page (frontend/js/app.js registers /projector/:tournamentId as an
+    // alias for DisplayPage) — this only changed which spelling the admin
+    // dashboard hands out going forward, so it matches the flat shape
+    // /stream/:id and /watch/:id already use. The OLD /auction/:id/display
+    // URL keeps working forever: nothing was removed, and anyone who already
+    // has that link — printed, texted, bookmarked — is unaffected.
+    return Tournaments._frontendBase() + '/projector/' + encodeURIComponent(tournamentId) +
+      '?k=' + encodeURIComponent(Tournaments._str(displayToken));
+  },
+
+  /**
+   * OBS Browser Source overlay link. Same display_token as the projector
+   * link above — it is the same read-only broadcast surface, just a
+   * different layout/skin for OBS instead of a hall projector.
+   * @param {string} tournamentId the tournament
+   * @param {string} displayToken the read-only projector/broadcast token
+   * @return {string} absolute URL, or the path alone when no base is configured
+   */
+  _streamUrl(tournamentId, displayToken) {
+    return Tournaments._frontendBase() + '/stream/' + encodeURIComponent(tournamentId) +
+      '?k=' + encodeURIComponent(Tournaments._str(displayToken));
+  },
+
+  /**
+   * Public viewer link. Same display_token again — an ordinary scrollable
+   * page rather than an OBS overlay or a hall projector.
+   * @param {string} tournamentId the tournament
+   * @param {string} displayToken the read-only projector/broadcast token
+   * @return {string} absolute URL, or the path alone when no base is configured
+   */
+  _watchUrl(tournamentId, displayToken) {
+    return Tournaments._frontendBase() + '/watch/' + encodeURIComponent(tournamentId) +
+      '?k=' + encodeURIComponent(Tournaments._str(displayToken));
   },
 
   /**
@@ -524,7 +556,8 @@ const Tournaments = {
    * @param {!Object} payload see CONTRACTS-PHASE1.md §2
    * @param {!Object} session the ADMIN session
    * @return {{tournament_id: string, slug: string, status: string,
-   *           registrationUrl: string, displayUrl: string}}
+   *           registrationUrl: string, displayUrl: string, streamUrl: string,
+   *           watchUrl: string}}
    * @throws {Error} VALIDATION_FAILED on any bad field
    */
   create(payload, session) {
@@ -644,7 +677,9 @@ const Tournaments = {
       slug: slug,
       status: row.status,
       registrationUrl: Tournaments._registrationUrl(tournamentId),
-      displayUrl: Tournaments._displayUrl(tournamentId, row.display_token)
+      displayUrl: Tournaments._displayUrl(tournamentId, row.display_token),
+      streamUrl: Tournaments._streamUrl(tournamentId, row.display_token),
+      watchUrl: Tournaments._watchUrl(tournamentId, row.display_token)
     };
   },
 
@@ -899,6 +934,8 @@ const Tournaments = {
     out.reg_fee_display = Util.formatINR(Util.toInt(row.reg_fee, 0));
     out.registrationUrl = Tournaments._registrationUrl(row.tournament_id);
     out.displayUrl = Tournaments._displayUrl(row.tournament_id, row.display_token);
+    out.streamUrl = Tournaments._streamUrl(row.tournament_id, row.display_token);
+    out.watchUrl = Tournaments._watchUrl(row.tournament_id, row.display_token);
     return out;
   },
 
@@ -1068,7 +1105,7 @@ function TournamentRoutes() {
       /**
        * @param {!Object} payload create fields
        * @param {!Object} session ADMIN session
-       * @return {!Object} {tournament_id, slug, status, registrationUrl, displayUrl}
+       * @return {!Object} {tournament_id, slug, status, registrationUrl, displayUrl, streamUrl, watchUrl}
        */
       handler: (payload, session) => Tournaments.create(payload, session)
     },

@@ -138,8 +138,15 @@ Why it matters: three links are built from this value —
 | Link | Returned by | Shape |
 |---|---|---|
 | Registration link | `tournament.create` / `tournament.get` as `registrationUrl` | `<base>/register/<tournamentId>` |
-| Projector link | `tournament.create` / `tournament.get` as `displayUrl` | `<base>/auction/<tournamentId>/display?k=<display_token>` |
+| Projector link | `tournament.create` / `tournament.get` as `displayUrl` | `<base>/projector/<tournamentId>?k=<display_token>` |
 | Organiser join link | `organiser.create` / `organiser.resendLink` as `joinUrl` | `<base>/organiser/join?k=<token>` |
+
+The admin dashboard also shows an **OBS overlay link** (`<base>/stream/<tournamentId>?k=<display_token>`)
+and a **public viewer link** (`<base>/watch/<tournamentId>?k=<display_token>`). These reuse the same
+`display_token` as the projector link — the frontend builds them locally, the backend does not return
+them separately. All four public/broadcast links share one flat shape: `/<page>/<tournamentId>?k=<key>`.
+The older `/auction/<tournamentId>/display?k=<display_token>` path still works (it is an alias for the
+same page) but new links are generated as `/projector/<tournamentId>?k=...` going forward.
 
 If it is unset or blank you get **path-only links** like `/register/TRN_abc` — which look fine in the admin screen but are useless when pasted into WhatsApp.
 
@@ -676,7 +683,7 @@ The auction hour itself is **`AUCTION-DAY.md`** — print that. This part is eve
 
 10. **Put the tournament into `AUCTION_LIVE`.** Admin → tournament → set status. Until this is set, every sale is rejected with `AUCTION_NOT_LIVE`.
 11. **Open the projector URL:**
-    `https://<your-pages-site>/auction/<tournament-id>/display?k=<display_token>`
+    `https://<your-pages-site>/projector/<tournament-id>?k=<display_token>`
     Then **press `F` for fullscreen**. The projector page has no visible controls. Keyboard only: `F` = fullscreen, `R` = force refresh.
 12. **Download the offline pack**, on good wifi, not venue wifi. It caches every eligible player and their photos into IndexedDB, and it is what keeps the console usable when the venue internet dies. Takes a minute. `AUCTION-DAY.md` lists this as a button on the auction console. **As the code stands, the console reads the pack (`Offline.getPlayer`, `Offline.getPlayers`) but never calls `Offline.downloadPack`, so there is no button yet.** Until one is wired up, run it once from the browser console on `/organiser/auction`: `Offline.downloadPack(tournamentId).then(console.log)`. Check `Offline.isPackReady(tournamentId)` returns true afterwards.
 13. **Pre-warm the image cache.** Leave the projector page open for a couple of minutes before you start. Revealing player #27 is then instant instead of a 400 ms wait in front of an audience.

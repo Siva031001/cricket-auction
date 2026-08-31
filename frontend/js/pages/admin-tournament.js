@@ -776,6 +776,27 @@ const AdminTournamentPage = {
       false
     ));
 
+    // Stream (OBS) and Watch use the SAME key as the projector link above —
+    // there is nothing extra to generate or configure. They exist so an admin
+    // never has to hand-type or guess these URLs, which is exactly how they
+    // used to get the shape wrong (putting "stream" inside /auction/.../).
+    links.appendChild(AdminTournamentPage._linkRow(
+      'OBS overlay link',
+      'Paste this into OBS Studio as a Browser Source (Width 1920, Height 1080). ' +
+      'Transparent background — it sits over your camera, it is not a page to open ' +
+      'in a normal browser tab.',
+      String(result.streamUrl || AdminTournamentPage._streamUrl(tid, result.display_token)),
+      false
+    ));
+
+    links.appendChild(AdminTournamentPage._linkRow(
+      'Public viewer link',
+      'Share this with anyone who just wants to follow the auction on their own ' +
+      'phone or laptop. No login, no OBS, updates on its own.',
+      String(result.watchUrl || AdminTournamentPage._watchUrl(tid, result.display_token)),
+      true
+    ));
+
     shell.body.appendChild(links);
 
     const ids = document.createElement('dl');
@@ -877,6 +898,18 @@ const AdminTournamentPage = {
         'Read-only. Keep the key in the link private.',
         AdminTournamentPage._displayUrl(tournamentId, row.display_token),
         false
+      ));
+      links.appendChild(AdminTournamentPage._linkRow(
+        'OBS overlay link',
+        'Paste into OBS Studio as a Browser Source.',
+        AdminTournamentPage._streamUrl(tournamentId, row.display_token),
+        false
+      ));
+      links.appendChild(AdminTournamentPage._linkRow(
+        'Public viewer link',
+        'Share with anyone following along from their own device.',
+        AdminTournamentPage._watchUrl(tournamentId, row.display_token),
+        true
       ));
     }
     shell.body.appendChild(links);
@@ -1477,8 +1510,38 @@ const AdminTournamentPage = {
    */
   _displayUrl: function (tournamentId, displayToken) {
     if (!displayToken) return '';
+    // /projector/:id, not /auction/:id/display — matches the flat shape
+    // /stream/:id and /watch/:id already use (see _streamUrl/_watchUrl below).
+    // Both spellings serve the identical page; the old one is untouched and
+    // keeps working for any link already shared before this changed.
     return AdminTournamentPage._absolute(
-      Router.href('/auction/' + encodeURIComponent(tournamentId) + '/display') +
+      Router.href('/projector/' + encodeURIComponent(tournamentId)) +
+      '?k=' + encodeURIComponent(String(displayToken))
+    );
+  },
+
+  /**
+   * @param {string} tournamentId
+   * @param {string} displayToken
+   * @return {string} absolute OBS Browser Source URL, or '' without a token
+   */
+  _streamUrl: function (tournamentId, displayToken) {
+    if (!displayToken) return '';
+    return AdminTournamentPage._absolute(
+      Router.href('/stream/' + encodeURIComponent(tournamentId)) +
+      '?k=' + encodeURIComponent(String(displayToken))
+    );
+  },
+
+  /**
+   * @param {string} tournamentId
+   * @param {string} displayToken
+   * @return {string} absolute public viewer URL, or '' without a token
+   */
+  _watchUrl: function (tournamentId, displayToken) {
+    if (!displayToken) return '';
+    return AdminTournamentPage._absolute(
+      Router.href('/watch/' + encodeURIComponent(tournamentId)) +
       '?k=' + encodeURIComponent(String(displayToken))
     );
   },

@@ -162,6 +162,9 @@ Plus `index.html` (the shell), `404.html` (bounces deep links into `index.html`)
 | `/organiser/dashboard` | `OrganiserDashboardPage` — `organiser-dashboard.js` | `organiser.css` |
 | `/organiser/auction` | `OrganiserAuctionPage` — `organiser-auction.js` | `auction.css` |
 | `/auction/:tournamentId/display` | `DisplayPage` — `display.js` | `display.css` |
+| `/projector/:tournamentId` | `DisplayPage` — `display.js` (alias, preferred going forward) | `display.css` |
+| `/stream/:tournamentId` | `StreamPage` — `stream.js` (OBS Browser Source overlay) | `stream.css` |
+| `/watch/:tournamentId` | `WatchPage` — `watch.js` (public viewer) | `watch.css` |
 
 Two frontend rules that are easy to break (`CONTRACTS-PHASE1.md` §4):
 
