@@ -76,12 +76,15 @@ const AUCTION_WARN_ABOVE_HIGHEST = 5;
 /**
  * Width of the projector photo variant, in pixels.
  *
- * The display shows the photo at about half the screen. 1200 covers a 1920-wide
- * projector at that size without asking Drive for a needlessly large file on
- * every reveal.
+ * 1024, not more: frontend/js/image.js uploads the profile photo with
+ * MAX_EDGE 1024, so that is the largest source Drive has. Asking for 1200 would
+ * describe a resolution that does not exist.
+ *
+ * Still a large improvement on photo_thumb_url, which is 320px and visibly soft
+ * filling half a projector screen.
  * @const {number}
  */
-const AUCTION_PROJECTOR_PHOTO_WIDTH = 1200;
+const AUCTION_PROJECTOR_PHOTO_WIDTH = 1024;
 
 const Auction = {
 
@@ -1081,8 +1084,9 @@ const Auction = {
         team_name: src[i].team_name,
         purse_remaining_display: src[i].purse_remaining_display,
         players_count: src[i].players_count,
-        max_players: src[i].max_players,
-        per_slot_remaining_display: src[i].per_slot_remaining_display
+        max_players: src[i].max_players
+        // per_slot_remaining_display removed: _buildSnapshot no longer emits it,
+        // so this copied undefined and JSON.stringify dropped the key anyway.
       });
     }
 
@@ -1092,6 +1096,10 @@ const Auction = {
       v: snap.v,
       same: false,
       status: snap.status,
+      // Safe to expose: the tournament name is already public on the
+      // registration page, and the projector is showing it to a hall.
+      // Without it the header falls back to a placeholder word.
+      tournament_name: snap.tournament_name,
       current: c ? {
         serial_no: c.serial_no,
         name: c.name,
@@ -1099,6 +1107,11 @@ const Auction = {
         style: c.style,
         age_years: c.age_years,
         photo_thumb_url: c.photo_thumb_url,
+        // The 1024px variant. This is an allow-list, so a field added to the
+        // snapshot does NOT reach the projector until it is named here — which
+        // is the point, but it also means the large photo was silently
+        // unreachable until this line existed.
+        photo_url: c.photo_url,
         auction_status: c.auction_status,
         team_name: c.team_name,
         sold_amount_display: c.sold_amount_display

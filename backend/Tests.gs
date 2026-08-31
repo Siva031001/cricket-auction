@@ -6013,14 +6013,25 @@ const Suites = {
               'though its key does not');
           });
 
+          // photo_url is the 1024px projector variant; photo_thumb_url (320px)
+          // stays as the fallback. Neither identifies a person beyond the photo
+          // the audience is already looking at.
           T.assertEqual(Object.keys(out.current).sort(), [
-            'age_years', 'auction_status', 'name', 'photo_thumb_url', 'role', 'serial_no',
-            'sold_amount_display', 'style', 'team_name'
+            'age_years', 'auction_status', 'name', 'photo_thumb_url', 'photo_url',
+            'role', 'serial_no', 'sold_amount_display', 'style', 'team_name'
           ], 'the projector card is exactly what §4.5 says the screen shows');
+
+          // per_slot_remaining_display is deliberately gone: it divided the
+          // remaining purse by empty slots, implying a per-player price, and
+          // every player here sells for a different amount (DESIGN.md §6.5a).
           T.assertEqual(Object.keys(out.teams[0]).sort(), [
-            'max_players', 'per_slot_remaining_display', 'players_count',
-            'purse_remaining_display', 'team_name'
-          ], 'and a team strip entry is exactly the five fields it renders');
+            'max_players', 'players_count', 'purse_remaining_display', 'team_name'
+          ], 'and a team strip entry is exactly the four fields it renders');
+
+          // The tournament NAME reaches the projector; its id must not be the
+          // thing an audience reads.
+          T.assert(!Util.isBlank(out.tournament_name),
+            'the projector feed carries the tournament name');
 
           // The 2-second poll: unchanged means ~30 bytes and no snapshot at all.
           const same = Suites._call('auction.displayState',

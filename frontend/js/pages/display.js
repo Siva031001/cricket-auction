@@ -951,8 +951,9 @@ const DisplayPage = {
     const take = function (value) {
       if (!value) return;
       if (typeof value === 'string') { urls.push(value); return; }
+      // One image per player: whichever the stage will actually render.
       if (value.photo_url) urls.push(String(value.photo_url));
-      if (value.photo_thumb_url) urls.push(String(value.photo_thumb_url));
+      else if (value.photo_thumb_url) urls.push(String(value.photo_thumb_url));
       else if (value.thumb) urls.push(String(value.thumb));
     };
 
@@ -1077,7 +1078,7 @@ const DisplayPage = {
 
     const message = DisplayPage._el('section', 'display__message');
     const messageTitle = DisplayPage._el('h1', 'display__message-title',
-      state.tournamentId || 'Auction display');
+      'Auction display');
     message.appendChild(messageTitle);
     const messageBody = DisplayPage._el('p', 'display__message-body', 'Connecting…');
     message.appendChild(messageBody);

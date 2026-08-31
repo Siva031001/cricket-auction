@@ -45,7 +45,10 @@
 const OrganiserJoinPage = {
 
   /** Where an organiser signs in once they HAVE a password. @const {string} */
-  LOGIN_PATH: '/admin/login',
+  // The organiser door, not the admin one. Same form, but a person who has
+  // just set an organiser password should not land on a screen headed
+  // "Admin sign-in" and wonder whether they were given the wrong link.
+  LOGIN_PATH: '/organiser/login',
 
   /** @const {string} */
   DASHBOARD_PATH: '/organiser/dashboard',

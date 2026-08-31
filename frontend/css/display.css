@@ -664,7 +664,23 @@ body[data-route="display"] .display__photo--empty {
 
 body[data-route="display"] .display__details {
   min-width: 0;
+  /* NOT overflow:hidden. Clipping would hide the SOLD amount and team outright,
+     which is worse than the overflow it was meant to stop. Instead the name is
+     allowed to shrink so the result row always has somewhere to sit. */
+  overflow: visible;
+  min-height: 0;
+}
+
+/* The name yields before anything else: it is the only element here that can
+   afford to. The result row (status, amount, team) must never be squeezed out. */
+body[data-route="display"] .display-name {
+  flex: 0 1 auto;
+  min-height: 0;
   overflow: hidden;
+}
+
+body[data-route="display"] .display__result {
+  flex: 0 0 auto;
 }
 
 body[data-route="display"] .display__result {
@@ -732,7 +748,9 @@ body[data-route="display"] .display__team-label {
   font-size: clamp(10px, 0.85vw, 15px);
   text-transform: uppercase;
   letter-spacing: 0.14em;
-  color: rgba(233, 242, 250, 0.55);
+  /* Was rgba(...,0.55), about 5:1 — below this file's own 12:1 floor, on the
+     smallest text on the screen, in a bright hall. */
+  color: var(--proj-ink-dim);
 }
 
 body[data-route="display"] .display__team-purse {
@@ -743,7 +761,8 @@ body[data-route="display"] .display__team-purse {
 
 body[data-route="display"] .display__team-count {
   font-size: clamp(13px, 1.15vw, 22px);
-  color: rgba(233, 242, 250, 0.72);
+  /* Was rgba(...,0.72), about 8:1. Back to the token that meets the floor. */
+  color: var(--proj-ink-dim);
 }
 
 /* A full squad cannot buy anyone. Say so, in a colour that reads as "closed"
@@ -779,10 +798,19 @@ body[data-route="display"] .display__tournament {
   font-size: clamp(16px, 1.7vw, 34px);
   font-weight: 800;
   letter-spacing: 0.01em;
-  background: linear-gradient(92deg, #9fe0ff 0%, #7ee2a8 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  /* Readable colour FIRST. The gradient below only replaces it on engines that
+     support background-clip:text; without the fallback, color:transparent makes
+     the tournament name completely invisible rather than merely unstyled. */
+  color: #9fe0ff;
+}
+
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  body[data-route="display"] .display__tournament {
+    background: linear-gradient(92deg, #9fe0ff 0%, #7ee2a8 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 }
 
 body[data-route="display"] .display__bottom {

@@ -22,6 +22,9 @@ const AdminLoginPage = {
   ORGANISER_HOME: '/organiser/dashboard',
   ORGANISER_LOGIN_PATH: '/organiser/login',
 
+  /** True while rendering /organiser/login, so the wording can differ. */
+  _asOrganiser: false,
+
   /** This screen's own path. */
   LOGIN_PATH: '/admin/login',
 
@@ -47,7 +50,15 @@ const AdminLoginPage = {
    */
   render: function (ctx) {
     document.body.dataset.route = 'admin-login';
-    document.title = 'Admin sign-in · Cricket Auction';
+
+    // One form, two doors. /organiser/login and /admin/login post to the same
+    // auth.login and the SERVER decides the role — the wording here is purely
+    // so the person reading it believes they are in the right place.
+    const asOrganiser = !!(ctx && String(ctx.path || '').indexOf('/organiser/') === 0);
+    AdminLoginPage._asOrganiser = asOrganiser;
+
+    document.title = (asOrganiser ? 'Organiser sign-in' : 'Admin sign-in') +
+      ' · Cricket Auction';
 
     const gen = ++AdminLoginPage._gen;
     AdminLoginPage._state = { busy: false, gen: gen };
@@ -94,7 +105,7 @@ const AdminLoginPage = {
 
     const h1 = document.createElement('h1');
     h1.className = 'panel__title';
-    h1.textContent = 'Admin sign-in';
+    h1.textContent = AdminLoginPage._asOrganiser ? 'Organiser sign-in' : 'Admin sign-in';
     main.appendChild(h1);
 
     main.appendChild(UI.spinner('Checking your session…'));
@@ -114,12 +125,15 @@ const AdminLoginPage = {
 
     const h1 = document.createElement('h1');
     h1.className = 'panel__title';
-    h1.textContent = 'Admin sign-in';
+    h1.textContent = AdminLoginPage._asOrganiser ? 'Organiser sign-in' : 'Admin sign-in';
     main.appendChild(h1);
 
     const note = document.createElement('p');
     note.className = 'panel__note';
-    note.textContent = 'Sign in to create tournaments and watch registrations arrive.';
+    note.textContent = AdminLoginPage._asOrganiser
+      ? 'Sign in with the email your tournament admin registered, and the ' +
+        'password you set from your invitation link.'
+      : 'Sign in to create tournaments and watch registrations arrive.';
     main.appendChild(note);
 
     /* Errors live in a permanent live region rather than being inserted and
