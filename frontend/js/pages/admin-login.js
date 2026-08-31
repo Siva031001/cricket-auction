@@ -59,9 +59,13 @@ const AdminLoginPage = {
     if (API.getToken()) {
       AdminLoginPage._renderChecking();
       API.call('auth.me', {})
-        .then(function () {
+        .then(function (me) {
           if (gen !== AdminLoginPage._gen) return;
-          Router.navigate(AdminLoginPage._destination(me && (me.user || me)), { replace: true });
+          // auth.me returns the session fields directly; accept a {user:{...}}
+          // wrapper too so a future response shape cannot silently send an
+          // organiser to the admin dashboard.
+          Router.navigate(AdminLoginPage._destination(me && (me.user || me)),
+            { replace: true });
         })
         .catch(function () {
           // Expired, revoked, or the network is down. Either way the only
