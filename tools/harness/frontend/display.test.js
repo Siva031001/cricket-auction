@@ -591,9 +591,15 @@ test('standings strip: purse remaining and players count / max', async () => {
   assert.strictEqual(oneByClass(cells[0], 'display__team-purse').textContent, '₹5,50,000');
   assert.strictEqual(oneByClass(cells[0], 'display__team-count').textContent, '7 / 12');
 
-  // The money is labelled. A bare rupee figure beside a squad count was read as
-  // money SPENT rather than money left.
-  assert.strictEqual(oneByClass(cells[0], 'display__team-label').textContent, 'Remaining');
+  // The money is labelled ONCE, over the block. It used to be repeated on every
+  // row; at twelve teams that is the same word twelve times, competing with the
+  // figures it is meant to explain.
+  const caption = oneByClass(env.root(), 'display__teams-caption');
+  assert.ok(!!caption, 'the teams block carries a caption');
+  assert.ok(/remaining/i.test(caption.textContent),
+    'and the caption says what the money is: ' + caption.textContent);
+  assert.strictEqual(oneByClass(cells[0], 'display__team-label'), null,
+    'no per-row label: it does not scale to 12 teams');
 
   // per-slot is gone on purpose. It divided the remaining purse by empty slots,
   // which implies a per-player price — and every player here goes for a
@@ -608,7 +614,12 @@ test('standings strip: purse remaining and players count / max', async () => {
   assert.strictEqual(full.length, 0, 'neither fixture team is full');
 
   const summary = visibleText(oneByClass(env.root(), 'display__summary'));
-  ['72', 'SOLD', '18', '6', 'Not called', '₹42,10,000'].forEach((needle) => {
+    // Total spent removed at the tournament owner's request: it freed the tallies
+  // to sit on one line beside the team table.
+  assert.ok(summary.indexOf('42,10,000') === -1,
+    'total spent is no longer shown: ' + summary);
+
+  ['72', 'SOLD', '18', '6', 'Not called'].forEach((needle) => {
     assert.ok(summary.toLowerCase().includes(String(needle).toLowerCase()),
       'summary should mention ' + needle + ' — got: ' + summary);
   });

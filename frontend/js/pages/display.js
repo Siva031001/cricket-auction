@@ -719,10 +719,6 @@ const DisplayPage = {
       li.appendChild(DisplayPage._el('span', 'display__team-name',
         String(team.team_name || team.team_id || '')));
 
-      // "Remaining" spelled out. A bare rupee figure next to a squad count was
-      // read as money spent by at least one person watching.
-      li.appendChild(DisplayPage._el('span', 'display__team-label', 'Remaining'));
-
       li.appendChild(DisplayPage._el('span', 'display__team-purse',
         DisplayPage._moneyText(team.purse_remaining_display, team.purse_remaining)));
 
@@ -770,10 +766,6 @@ const DisplayPage = {
         DisplayPage._num(s[field.key]), field.label));
     });
 
-    if (s.total_spent_display || s.total_spent !== undefined) {
-      box.appendChild(DisplayPage._summaryItem(
-        DisplayPage._moneyText(s.total_spent_display, s.total_spent), 'Total spent'));
-    }
   },
 
   /**
@@ -1090,13 +1082,25 @@ const DisplayPage = {
     const bottom = DisplayPage._el('footer', 'display__bottom');
     bottom.hidden = true;
 
+    // The teams block is wrapped so it can carry one caption instead of
+    // repeating the word "Remaining" on every row — which at 12 teams is twelve
+    // repetitions of the same word competing with the figures.
+    const teamsBox = DisplayPage._el('section', 'display__teams-box');
+    teamsBox.appendChild(DisplayPage._el('h2', 'display__teams-caption',
+      'Teams · purse remaining · players'));
+
     const teams = DisplayPage._el('ul', 'display__teams');
     teams.setAttribute('aria-label', 'Team standings');
-    bottom.appendChild(teams);
+    teamsBox.appendChild(teams);
 
     const summary = DisplayPage._el('div', 'display__summary');
     summary.hidden = true;
+
+    // Summary first in the DOM, teams second: the bottom-right corner is the
+    // teams table (feedback), and source order matches reading order for a
+    // screen reader.
     bottom.appendChild(summary);
+    bottom.appendChild(teamsBox);
 
     root.appendChild(bottom);
 

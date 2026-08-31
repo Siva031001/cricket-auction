@@ -853,101 +853,174 @@ body[data-route="display"] .status {
 }
 
 /* ======================================================================
-   REVISION 2 — the standings and the summary were colliding
+   REVISION 2 — teams as a compact table in the bottom-right corner
    ======================================================================
 
-   .display__bottom was a single column: the six team cards wrapped onto two
-   rows, the six summary figures wrapped onto another, and the whole lot was
-   squeezed into max-height:30vh. On a real projector they overlapped.
+   Two corrections to the first attempt:
 
-   Now two columns, as asked for: standings take the width they need on the
-   left, and the summary becomes a compact two-column table pinned to the
-   bottom-right corner. It is reference information — the audience reads the
-   player and the purses, not the tallies — so it gets the smaller corner.
+   1. It put the SUMMARY in the corner. The request was the other way round —
+      the team details belong in the corner table; the sold/unsold tallies are
+      the incidental figures.
+   2. It assumed six teams. This has to hold TWELVE without collapsing, so the
+      table flows into as many columns as it needs, six rows at a time. Six
+      teams give one column, twelve give two, and nothing has to change.
+
+   "Total spent" is gone at the tournament owner's request, which also lets the
+   remaining tallies sit on one line.
+
+   One row per team, reading left to right: name, purse remaining, players. The
+   per-row "Remaining" label is gone — at twelve teams it was the same word
+   printed twelve times — replaced by a single caption over the block.
    ====================================================================== */
 
 body[data-route="display"] .display__bottom {
   display: grid;
+  /* Summary left (it is small and fixed), teams right and as wide as they
+     need. auto for the teams column so two columns of six can claim the room
+     rather than being squeezed by a 1fr summary. */
   grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: clamp(12px, 2vw, 40px);
+  column-gap: clamp(14px, 2vw, 44px);
   row-gap: clamp(6px, 1vh, 14px);
   align-items: end;
-  /* A little more room than 30vh now that the two are side by side rather
-     than stacked. */
-  max-height: 34vh;
+  max-height: 36vh;
 }
 
-body[data-route="display"] .display__teams {
-  grid-column: 1;
-  align-self: end;
-}
+/* ---- summary: the small tallies, bottom-left ------------------------- */
 
-/* The summary as a real two-column table: label on the left, figure on the
-   right, one row each. Right-aligned figures with tabular numerals so the
-   column of digits lines up. */
 body[data-route="display"] .display__summary {
-  grid-column: 2;
-  display: grid;
-  grid-template-columns: auto auto;
-  column-gap: clamp(8px, 1vw, 20px);
-  row-gap: 2px;
-  align-content: end;
+  grid-column: 1;
+  display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  padding: clamp(6px, 0.9vh, 14px) clamp(8px, 1vw, 18px);
-  border-radius: clamp(8px, 0.7vw, 14px);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(120, 190, 255, 0.16);
-  /* Never let it grow into the standings. */
-  max-width: 34vw;
+  gap: clamp(6px, 1.1vw, 26px);
+  align-self: end;
+  padding: 0;
+  background: none;
+  border: 0;
+  max-width: none;
 }
 
-/* display:contents so the label and value become direct grid children and
-   land in the two columns, instead of each item being one cell. */
 body[data-route="display"] .display__summary-item {
-  display: contents;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
 }
 
 body[data-route="display"] .display__summary-label {
-  grid-column: 1;
+  grid-column: auto;
   text-align: left;
-  /* Smaller than the standings: this is the corner reference, not the headline. */
-  font-size: clamp(9px, 0.8vw, 14px);
-  letter-spacing: 0.1em;
+  font-size: clamp(10px, 0.85vw, 16px);
+  letter-spacing: 0.08em;
   white-space: nowrap;
 }
 
 body[data-route="display"] .display__summary-value {
-  grid-column: 2;
-  text-align: right;
-  font-size: clamp(12px, 1.05vw, 20px);
+  grid-column: auto;
+  text-align: left;
+  font-size: clamp(14px, 1.2vw, 24px);
   white-space: nowrap;
 }
 
-/* A projector mounted portrait, or a narrow window: go back to stacking, and
-   let the summary run across rather than sit in a corner that no longer
-   exists. */
+/* ---- teams: the corner table ----------------------------------------- */
+
+body[data-route="display"] .display__teams-box {
+  grid-column: 2;
+  align-self: end;
+  justify-self: end;
+  padding: clamp(6px, 0.9vh, 14px) clamp(8px, 1vw, 16px);
+  border-radius: clamp(8px, 0.7vw, 14px);
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(120, 190, 255, 0.18);
+  max-width: 62vw;
+  min-width: 0;
+}
+
+body[data-route="display"] .display__teams-caption {
+  margin: 0 0 clamp(2px, 0.5vh, 6px) 0;
+  font-size: clamp(9px, 0.75vw, 13px);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--proj-ink-dim);
+  white-space: nowrap;
+}
+
+body[data-route="display"] .display__teams {
+  display: grid;
+  /* SIX ROWS, THEN A NEW COLUMN. This is the whole answer to "it may have 12
+     teams": 6 -> one column, 12 -> two, 18 -> three. No media query and no
+     count-dependent rule to keep in sync. */
+  grid-auto-flow: column;
+  grid-template-rows: repeat(6, auto);
+  grid-template-columns: none;
+  gap: 1px clamp(10px, 1.4vw, 26px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One team, one line: name | purse | players. */
+body[data-route="display"] .display__team-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  column-gap: clamp(6px, 0.8vw, 14px);
+  padding: clamp(2px, 0.35vh, 5px) 0;
+  border-left: 0;
+  border-radius: 0;
+  background: none;
+  line-height: 1.2;
+}
+
+body[data-route="display"] .display__team-name {
+  font-size: clamp(11px, 0.95vw, 18px);
+  font-weight: 600;
+  /* Ellipsis, not wrap: with 12 teams a wrapped name doubles a row's height and
+     pushes the last team off the bottom. The purse and the count are the
+     numbers being read; a long club name can be clipped. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 15ch;
+}
+
+body[data-route="display"] .display__team-purse {
+  font-size: clamp(11px, 1vw, 19px);
+  font-weight: 800;
+  color: #7ee2a8;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+body[data-route="display"] .display__team-count {
+  font-size: clamp(10px, 0.85vw, 16px);
+  color: var(--proj-ink-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  min-width: 4ch;
+}
+
+body[data-route="display"] .display__team-count[data-full="true"] {
+  color: #ffd479;
+  font-weight: 700;
+}
+
+/* Portrait mount or a narrow window: stack, and let the table use four rows so
+   it stays wide rather than tall. */
 @media (max-aspect-ratio: 1/1) {
   body[data-route="display"] .display__bottom {
     grid-template-columns: minmax(0, 1fr);
-    max-height: 40vh;
+    max-height: 42vh;
   }
-  body[data-route="display"] .display__teams,
-  body[data-route="display"] .display__summary {
+  body[data-route="display"] .display__summary,
+  body[data-route="display"] .display__teams-box {
     grid-column: 1;
-  }
-  body[data-route="display"] .display__summary {
-    grid-template-columns: repeat(3, auto);
-    justify-content: start;
+    justify-self: stretch;
     max-width: none;
   }
-  body[data-route="display"] .display__summary-item {
-    display: flex;
-    gap: 0.4em;
-    align-items: baseline;
-  }
-  body[data-route="display"] .display__summary-label,
-  body[data-route="display"] .display__summary-value {
-    grid-column: auto;
-    text-align: left;
+  body[data-route="display"] .display__teams {
+    grid-template-rows: repeat(4, auto);
   }
 }
