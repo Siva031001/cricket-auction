@@ -10,7 +10,7 @@
  *   CONTRACTS-PHASE3 §2  team.createBatch / team.create / team.list /
  *                        team.squad / team.update / team.delete payloads and
  *                        their error codes
- *   CONTRACTS-PHASE3 §5  batch creation is the DEFAULT path; per_slot_remaining
+ *   CONTRACTS-PHASE3 §5  batch creation is the DEFAULT path; slots_remaining
  *                        is shown per team
  *   DESIGN.md §6.4       purse and squad size stay editable at any time; only
  *                        a change that contradicts existing data is refused
@@ -32,10 +32,10 @@
  *   2. "₹ PER EMPTY SLOT" IS THE HEADLINE NUMBER.
  *      Purse remaining alone does not tell an organiser whether a team is in
  *      trouble: ₹1,00,000 is comfortable with one slot left and hopeless with
- *      six. per_slot_remaining is the division the server has already done
+ *      six. slots_remaining and purse_remaining are the two true figures
  *      (CONTRACTS-PHASE3 §2), so it gets the largest type in the row and a
  *      word — "Low" / "Very low" — whenever it falls well under what the team
- *      could originally afford per slot.
+ *      could originally afford, without stating a per-player price.
  *
  *   3. NEVER HIDE A CONTROL TO PREVENT AN ERROR.
  *      Lowering a squad size below the players already bought is refused with
@@ -45,7 +45,7 @@
  *      enabled and the server's own words are printed, unedited.
  *
  *   4. THE COUNTERS ARE THE SERVER'S TO CALCULATE.
- *      purse_used, players_count, slots_remaining and per_slot_remaining are
+ *      purse_used, players_count and slots_remaining are
  *      read straight off team.list and never recomputed here. A second
  *      definition of the same number is how two screens end up disagreeing
  *      (CONTRACTS-PHASE3 §3).
@@ -59,6 +59,9 @@ const OrganiserDashboardPage = {
 
   /** @const {string} */
   DASHBOARD_PATH: '/organiser/dashboard',
+
+  /** The live auction console. @const {string} */
+  AUCTION_PATH: '/organiser/auction',
 
   /** Written by OrganiserJoinPage. Same key names on purpose. @const {string} */
   TOURNAMENT_KEY: 'ca.organiser.tournament',
@@ -373,6 +376,17 @@ const OrganiserDashboardPage = {
 
     const actions = document.createElement('div');
     actions.className = 'org__actions';
+
+    // THE WAY IN TO THE AUCTION. Until now /organiser/auction was reachable only
+    // by typing the URL, which is not something to ask of someone standing on a
+    // stage about to start (feedback item 13). This is the organiser's primary
+    // action on the day, so it is a button and not a link buried in text.
+    const toAuction = document.createElement('a');
+    toAuction.className = 'btn btn--primary org__to-auction';
+    toAuction.textContent = 'Open the auction console';
+    toAuction.href = Router.href(OrganiserDashboardPage.AUCTION_PATH);
+    actions.appendChild(toAuction);
+
     head.appendChild(actions);
 
     main.appendChild(head);
@@ -663,7 +677,7 @@ const OrganiserDashboardPage = {
       { text: 'Purse', numeric: true },
       { text: 'Used', numeric: true },
       { text: 'Remaining', numeric: true },
-      { text: '₹ per empty slot', numeric: true },
+      { text: 'Slots left', numeric: true },
       { text: 'Players', numeric: true },
       { text: 'Actions', numeric: false }
     ].forEach(function (col) {
@@ -805,35 +819,53 @@ const OrganiserDashboardPage = {
   },
 
   /**
-   * How much room a team has left per empty slot, and whether that is low.
+   * How many squad slots a team still has, and whether it can still fill them.
+   *
+   * This replaced a "₹ per empty slot" figure (remaining purse / empty slots).
+   * That number was removed on the tournament owner's instruction and they were
+   * right: every player sells for a different amount, so an average reads as a
+   * price per player when no such price exists.
+   *
+   * What is true and useful: how many slots are left, and whether the team has
+   * any money at all to fill them. A team with slots and no purse is genuinely
+   * stuck, and that is worth flagging.
    *
    * @param {!Object} team a team.list entry
    * @return {{level:string, text:string, label:string}}
    */
   _slotLevel: function (team) {
-    const raw = team ? team.per_slot_remaining : null;
+    const slots = Number(team && team.slots_remaining);
+    const purse = Number(team && team.purse_remaining);
 
-    // null means the squad is full (CONTRACTS-PHASE3 §2). Nothing to divide,
-    // and nothing to warn about — a full squad is the goal, not a problem.
-    if (raw === null || raw === undefined || raw === '') {
+    if (!isFinite(slots) || slots <= 0) {
+      // A full squad is the goal, not a problem.
       return { level: 'full', text: 'Squad full', label: '' };
     }
 
-    const value = Number(raw);
-    const text = (team.per_slot_remaining_display)
-      ? String(team.per_slot_remaining_display)
-      : UI.money(isFinite(value) ? value : 0);
+    const text = String(slots) + (slots === 1 ? ' slot' : ' slots');
 
-    if (!isFinite(value) || value <= 0) {
+    if (!isFinite(purse) || purse <= 0) {
       return { level: 'critical', text: text, label: 'No money left' };
     }
 
+    // "Is this team squeezed?" is still worth flagging — a team that spent
+    // heavily early may not be able to fill its squad, and that is the thing an
+    // organiser most wants to spot. What was wrong was DISPLAYING a per-slot
+    // price; the underlying comparison is fine and is kept.
+    //
+    // Measured against the team's own even-spending position: if it has half its
+    // slots left, it "should" have about half its purse. Falling well short of
+    // that is the warning. No per-player figure is stated or implied.
     const total = Number(team.purse_total);
     const max = Number(team.max_players);
-    const baseline = (isFinite(total) && isFinite(max) && max > 0) ? (total / max) : 0;
-    if (!baseline) return { level: 'ok', text: text, label: '' };
+    if (!isFinite(total) || !isFinite(max) || max <= 0 || total <= 0) {
+      return { level: 'ok', text: text, label: '' };
+    }
 
-    const ratio = value / baseline;
+    const expected = total * (slots / max);
+    if (expected <= 0) return { level: 'ok', text: text, label: '' };
+
+    const ratio = purse / expected;
     if (ratio < OrganiserDashboardPage.CRITICAL_SLOT_RATIO) {
       return { level: 'critical', text: text, label: 'Very low' };
     }
@@ -911,7 +943,29 @@ const OrganiserDashboardPage = {
       hint: 'Cannot go below the number of players the team has already bought.'
     });
 
-    [name, owner, purse, squad].forEach(function (f) { grid.appendChild(f.wrap); });
+    // Team logo (feedback item 2). Optional — a team with no logo is normal, so
+    // this never blocks a save. team.update uploads outside the auction lock,
+    // which is why it could not be offered before.
+    const logo = UI.field({
+      label: 'Team logo', name: 'logo', type: 'file',
+      accept: 'image/*',
+      hint: team.logo_url
+        ? 'Optional. Choosing a file replaces the current logo.'
+        : 'Optional. PNG or JPEG.'
+    });
+
+    // Only offered when there is something to remove, so it is never a control
+    // that does nothing.
+    let dropLogo = null;
+    if (team.logo_url) {
+      dropLogo = UI.field({
+        label: 'Remove the current logo', name: 'removeLogo', type: 'checkbox',
+        hint: 'The team keeps everything else. The old image goes to Drive trash.'
+      });
+    }
+
+    [name, owner, purse, squad, logo].forEach(function (f) { grid.appendChild(f.wrap); });
+    if (dropLogo) grid.appendChild(dropLogo.wrap);
     form.appendChild(grid);
 
     // Per-row live region, so the reason a change was refused appears beside
@@ -1015,7 +1069,17 @@ const OrganiserDashboardPage = {
         payload.maxPlayers = Number(values.maxPlayers); changed += 1;
       }
 
-      if (!changed) {
+      if (dropLogo && dropLogo.input && dropLogo.input.checked) {
+        payload.removeLogo = true; changed += 1;
+      }
+
+      // The image is read and resized before the request, so the file the
+      // organiser picked never travels at full size (CONTRACTS-PHASE1 §1).
+      const logoFile = (logo.input && logo.input.files && logo.input.files.length)
+        ? logo.input.files[0]
+        : null;
+
+      if (!changed && !logoFile) {
         OrganiserDashboardPage._showError(rowErrors,
           'Nothing has changed, so there is nothing to save.');
         return;
@@ -1023,7 +1087,20 @@ const OrganiserDashboardPage = {
 
       setBusy(true);
 
-      OrganiserDashboardPage._call('team.update', payload)
+      const prepared = logoFile
+        ? ImageTool.fromFile(logoFile, { maxEdge: 512, quality: 0.85, keepPng: true })
+            .then(function (out) {
+              payload.logo = { data: out.data, mime: out.mime, filename: out.filename };
+            })
+        : Promise.resolve();
+
+      prepared.catch(function (err) {
+        setBusy(false);
+        OrganiserDashboardPage._showError(rowErrors,
+          'That logo could not be read: ' + ((err && err.message) || 'unknown error'));
+        throw err;
+      }).then(function () {
+      return OrganiserDashboardPage._call('team.update', payload)
         .then(function () {
           if (!OrganiserDashboardPage._current(state)) return;
           OrganiserDashboardPage._flash =
@@ -1038,6 +1115,10 @@ const OrganiserDashboardPage = {
           setBusy(false);
           OrganiserDashboardPage._surfaceUpdateError(err, rowErrors, purse, squad, name);
         });
+      }).catch(function () {
+        // The logo-read failure has already been reported above. Swallowed here
+        // only so it does not surface as an unhandled rejection.
+      });
     }
 
     return { el: form, firstInput: name.input };

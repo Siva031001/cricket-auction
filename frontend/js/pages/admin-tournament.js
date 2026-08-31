@@ -1,11 +1,14 @@
 /**
  * admin-tournament.js — the /admin/dashboard screen.
  *
- * PHASE 1 SCOPE ONLY (CONTRACTS-PHASE1.md §6): sign-in plus tournament
- * create / list / edit. That is exactly enough for an admin to produce a
- * registration link and watch registrations arrive. Payment verification,
- * the player list, teams and the auction are Phases 2–4 and are represented
- * here by a labelled placeholder panel, not by half-built screens.
+ * Tournament create / list / edit, plus the registration and projector links.
+ * This is where a tournament is set up and where one gets SELECTED — every
+ * other admin screen is scoped to the selection made here.
+ *
+ * Payment verification, the player list, organisers, teams, the auction,
+ * reports and the audit log all exist and live on their own screens. This page
+ * links to them in running order (_nextStepsPanel), because the sequence is not
+ * obvious from a row of nav tabs.
  *
  * One page module, three views, chosen by ?view= :
  *   (none)         LIST    tournament.list
@@ -449,7 +452,9 @@ const AdminTournamentPage = {
     listBox.appendChild(UI.spinner('Loading tournaments…'));
     shell.body.appendChild(listBox);
 
-    shell.body.appendChild(AdminTournamentPage._laterPhasesPanel());
+    shell.body.appendChild(AdminTournamentPage._nextStepsPanel(
+      (typeof App !== 'undefined' && App.currentTournamentId)
+        ? App.currentTournamentId() : ''));
 
     AdminTournamentPage._mount(shell.main);
 
@@ -1691,43 +1696,85 @@ const AdminTournamentPage = {
   },
 
   /**
-   * Everything Phase 1 deliberately does not build (CONTRACTS-PHASE1.md §6).
-   * Named here so an admin can see the plan and does not go hunting for a
-   * button that was never meant to exist yet.
+   * What to do next, with links to the screens that do it.
+   *
+   * This replaced a "Not built yet" panel that listed payment verification, the
+   * player list, teams and the auction as arriving in later phases. All four now
+   * exist and are in the nav, so the panel was telling an admin that working
+   * features were missing — and sending them looking for nothing.
+   *
+   * Kept as a panel rather than deleted: the dashboard is where an admin lands,
+   * and the order of these steps is not obvious from a row of nav tabs.
+   *
+   * @param {string} tournamentId the selected tournament, may be ''
    * @return {HTMLElement}
    */
-  _laterPhasesPanel: function () {
+  _nextStepsPanel: function (tournamentId) {
     const section = document.createElement('section');
     section.className = 'later';
 
     const h2 = document.createElement('h2');
     h2.className = 'panel__subtitle';
-    h2.textContent = 'Not built yet';
+    h2.textContent = 'Running a tournament, in order';
     section.appendChild(h2);
 
     const intro = document.createElement('p');
     intro.className = 'panel__note';
-    intro.textContent =
-      'Phase 1 covers tournaments and the registration link only. These arrive later:';
+    intro.textContent = tournamentId
+      ? 'Each step has its own screen. Work down the list.'
+      : 'Create a tournament above, or select one, and these become available.';
     section.appendChild(intro);
 
     const ul = document.createElement('ul');
     ul.className = 'later__list';
+
     [
-      ['Payment verification', 'Phase 2 — check each screenshot against the bank statement, then verify or reject.'],
-      ['Player list', 'Phase 2 — search, filter and export everyone who has registered.'],
-      ['Teams and purses', 'Phase 3 — the 8 squads, pre-filled from the defaults set on the tournament.'],
-      ['Auction console and projector', 'Phase 4 — call players, record sales, drive the big screen.']
-    ].forEach(function (pair) {
+      ['Share the registration link', null,
+        'Copy it from the tournament above and post it. Players need no account.'],
+      ['Verify payments', '/admin/payments',
+        'Check each UPI reference against your bank statement, then verify or reject. ' +
+        'Only verified players can be sold.'],
+      ['Check the player list', '/admin/players',
+        'Search, filter and see who is eligible for the auction.'],
+      ['Create the organiser', '/admin/organisers',
+        'Sends a one-time link so they can set a password. Shown once.'],
+      ['Teams and purses', '/organiser/dashboard',
+        'The organiser creates the squads, pre-filled from this tournament\u2019s defaults.'],
+      ['Run the auction', '/organiser/auction',
+        'Call players by serial number, record sales. The projector link is on the ' +
+        'tournament above.'],
+      ['Reports and audit', '/admin/reports',
+        'Export the player list, team report and auction report. The audit log ' +
+        'settles any dispute afterwards.']
+    ].forEach(function (row) {
       const li = document.createElement('li');
-      const strong = document.createElement('strong');
-      strong.textContent = pair[0];
-      li.appendChild(strong);
-      li.appendChild(document.createTextNode(' — ' + pair[1]));
+
+      // Linked whether or not a tournament is selected. app.js already shows a
+      // picker on a tournament-scoped route with no selection, so the link is
+      // never a dead end — and the list view, where nothing is selected yet, is
+      // exactly where someone wants to click through.
+      if (row[1]) {
+        const a = document.createElement('a');
+        a.className = 'later__link';
+        a.textContent = row[0];
+        // adminPath carries ?t= so the selection is not lost on the way there;
+        // an admin verifying payments against the wrong tournament is silent
+        // and unrecoverable (CONTRACTS-PHASE2 §6.3).
+        a.href = (typeof App !== 'undefined' && App.adminPath)
+          ? App.adminPath(row[1], tournamentId)
+          : Router.href(row[1]);
+        li.appendChild(a);
+      } else {
+        const strong = document.createElement('strong');
+        strong.textContent = row[0];
+        li.appendChild(strong);
+      }
+
+      li.appendChild(document.createTextNode(' \u2014 ' + row[2]));
       ul.appendChild(li);
     });
-    section.appendChild(ul);
 
+    section.appendChild(ul);
     return section;
   }
 };

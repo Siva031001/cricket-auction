@@ -496,13 +496,31 @@ async function testListRenders() {
   ok(!!byTag(evilRow, 'A').find((a) => a.textContent === 'Edit'), 'Edit action present');
   ok(!!findButton(bodyRows[0], 'Copy registration link'), 'Copy registration link present');
 
-  // Phase 1 boundary: the later phases are named, not built.
+  // The dashboard points at the screens that do the work, in running order.
+  //
+  // This used to assert the OPPOSITE: that the panel named payment verification
+  // and the auction as "Phase 4 — arrives later". They exist, so the panel was
+  // telling an admin that working features were missing and sending them looking
+  // for nothing. Now it must LINK to them instead.
   const later = byClass(App.root, 'later')[0];
-  ok(!!later, 'placeholder panel for the later phases');
-  ok(later.textContent.indexOf('Payment verification') !== -1, 'payment verification named as later');
-  ok(later.textContent.indexOf('Phase 4') !== -1, 'auction named as later');
-  eq(byTag(App.root, 'A').filter((a) => /verify/i.test(a.textContent)).length, 0,
-    'no half-built payment screen');
+  ok(!!later, 'the dashboard has a next-steps panel');
+  ok(later.textContent.indexOf('Verify payments') !== -1, 'payment verification is offered');
+  ok(later.textContent.indexOf('Run the auction') !== -1, 'the auction is offered');
+  ok(later.textContent.indexOf('Phase') === -1,
+    'and nothing is described as an unbuilt phase: ' + later.textContent.slice(0, 120));
+
+  const stepLinks = byClass(later, 'later__link');
+  ok(stepLinks.length >= 4, 'the steps are links, not just words (got ' + stepLinks.length + ')');
+  const hrefs = stepLinks.map((a) => String(a.href || a.getAttribute('href') || '')).join(' ');
+  ['/admin/payments', '/admin/players', '/organiser/auction', '/admin/reports']
+    .forEach(function (p) {
+      ok(hrefs.indexOf(p) !== -1, 'links to ' + p + ': ' + hrefs);
+    });
+  // A "Verify payments" link is now the CORRECT thing to find here. This
+  // assertion previously demanded its absence, which was right when the screen
+  // did not exist and wrong the moment it did.
+  eq(byTag(App.root, 'A').filter((a) => /verify payments/i.test(a.textContent)).length, 1,
+    'exactly one link to the payment queue');
 }
 
 async function testStatusTransitions() {

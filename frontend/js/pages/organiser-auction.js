@@ -41,7 +41,7 @@
  *   1. THE CONFIRM DIALOG IS THE MAIN SAFETY FEATURE (DESIGN.md §6.5a).
  *      Nothing is ever sold without first showing the arithmetic:
  *          Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000?
- *          Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.
+ *          Leaves ₹4,75,000 for 3 more slots.
  *      One extra zero during a live auction is the most damaging and least
  *      recoverable mistake available, and this line costs nothing.
  *
@@ -844,6 +844,11 @@ const OrganiserAuctionPage = {
     els.packPhase = document.createElement('p');
     els.packPhase.className = 'auc-pack__phase';
     els.packPhase.setAttribute('aria-live', 'polite');
+    // Restored from state, not left blank. This element is recreated on every
+    // re-render, and _loadPackStatus re-renders immediately after a download
+    // finishes — so writing "Finished." straight to the DOM lost it before the
+    // organiser could read it. The text lives in state and the DOM follows.
+    els.packPhase.textContent = state.packPhaseText || '';
     box.appendChild(els.packPhase);
 
     els.packWarnings = document.createElement('div');
@@ -952,7 +957,12 @@ const OrganiserAuctionPage = {
     if (state.packBusy && state.packProgress) {
       els.packProgress.appendChild(state.packProgress.el);
     } else {
-      els.packPhase.textContent = '';
+      // Show the last thing that happened, not nothing. This used to blank the
+      // line as soon as packBusy went false — which is the instant the download
+      // finishes — so "Finished." was erased before anyone could read it. The
+      // organiser needs to know the pack completed, and if it did not complete
+      // they need to know that even more.
+      els.packPhase.textContent = state.packPhaseText || '';
     }
 
     /* ---- warnings and the last failure --------------------------- */
@@ -1035,14 +1045,16 @@ const OrganiserAuctionPage = {
       const total = Number(info && info.total) || 0;
       const done = Number(info && info.done) || 0;
       state.packProgress.set(total > 0 ? (done / total) * 100 : 0);
-      state.els.packPhase.textContent = String((info && info.label) || '');
+      state.packPhaseText = String((info && info.label) || '');
+      state.els.packPhase.textContent = state.packPhaseText;
     }, opts).then(function (res) {
       state.packBusy = false;
       state.packProgress = null;
       if (!OrganiserAuctionPage._current(state)) return;
-      state.els.packPhase.textContent = (res && res.complete)
+      state.packPhaseText = (res && res.complete)
         ? 'Finished.'
         : 'Finished, but the pack is not complete.';
+      state.els.packPhase.textContent = state.packPhaseText;
       OrganiserAuctionPage._loadPackStatus(state);
     }).catch(function (err) {
       state.packBusy = false;
@@ -2505,15 +2517,19 @@ const OrganiserAuctionPage = {
     const slotsAfter = (Number(team.max_players) || 0) - (Number(team.players_count) || 0) - 1;
     const purseAfter = remaining - amount;
     if (lowest > 0 && slotsAfter > 0) {
+      // Compared against the cheapest sale that ACTUALLY happened, and worded
+      // the same way the server words it (Auction._warnings). No per-slot
+      // average is shown: it reads as a price per player, and there isn't one.
       const perSlot = Math.floor(purseAfter / slotsAfter);
       if (perSlot < lowest) {
         out.push({
           code: 'SQUAD_AT_RISK',
           message: 'This leaves ' + name + ' ' + OrganiserAuctionPage._money(purseAfter) +
             ' for ' + slotsAfter + ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') +
-            ' — ' + OrganiserAuctionPage._money(perSlot) +
-            ' each, below the cheapest sale so far of ' +
-            OrganiserAuctionPage._money(lowest) + '.'
+            '. The cheapest sale so far was ' + OrganiserAuctionPage._money(lowest) +
+            ', so filling ' + (slotsAfter === 1 ? 'it' : 'them') +
+            ' at that price would need about ' +
+            OrganiserAuctionPage._money(lowest * slotsAfter) + '.'
         });
       }
     }
@@ -2525,7 +2541,7 @@ const OrganiserAuctionPage = {
    * THE SINGLE MOST VALUABLE GUARD ON THIS SCREEN (DESIGN.md §6.5a).
    *
    *   Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000?
-   *   Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.
+   *   Leaves ₹4,75,000 for 3 more slots.
    *
    * No judgement, just the arithmetic. The organiser reads it in a second and
    * catches their own mistake. The per-slot division is Math.floor, the same
@@ -2547,9 +2563,13 @@ const OrganiserAuctionPage = {
 
     let leaves;
     if (slotsAfter > 0) {
+      // No per-slot average. Every player sells for a different amount, so
+      // dividing the purse by empty slots states a price that does not exist.
+      // The two true figures — what is left and how many slots — are enough for
+      // the organiser to judge it, and the server's SQUAD_AT_RISK advisory
+      // quotes the cheapest sale that has actually happened.
       leaves = 'Leaves ' + OrganiserAuctionPage._money(after) + ' for ' + slotsAfter +
-        ' ' + (slotsAfter === 1 ? 'slot' : 'slots') + ' — ' +
-        OrganiserAuctionPage._money(Math.floor(after / slotsAfter)) + ' per slot.';
+        ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') + '.';
     } else if (slotsAfter === 0) {
       leaves = 'That completes the squad and leaves ' +
         OrganiserAuctionPage._money(after) + ' unspent.';
@@ -3465,11 +3485,14 @@ const OrganiserAuctionPage = {
         OrganiserAuctionPage._num(t.max_players);
       li.appendChild(count);
 
+      // Slots left, NOT remaining-purse-divided-by-slots. Every player sells
+      // for a different amount, so that average stated a price that does not
+      // exist — and the organiser is reading this while deciding what to accept.
       const slot = document.createElement('span');
       slot.className = 'auc-team__slot';
-      slot.textContent = String(t.per_slot_remaining_display ||
-        (slots > 0 ? OrganiserAuctionPage._money(Math.floor((Number(t.purse_remaining) || 0) / slots))
-          : 'Squad full')) + (slots > 0 ? ' per slot' : '');
+      slot.textContent = slots > 0
+        ? (String(slots) + (slots === 1 ? ' slot left' : ' slots left'))
+        : 'Squad full';
       li.appendChild(slot);
 
       list.appendChild(li);

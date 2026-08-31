@@ -510,3 +510,12 @@ body[data-route="register"] .reg-contact__phone {
   body[data-route="register"] .reg-done__serial { color: #000000; }
   body[data-route="register"] .reg-done__serial-box { border-color: #000000; }
 }
+
+/* Feedback item 1: a chosen image can now be removed before saving. The control
+   only exists while there is something to remove, so it never sits on the form
+   as dead furniture. */
+body[data-route="register"] .reg-preview__remove {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+body[data-route="register"] .reg-preview__remove[hidden] { display: none; }

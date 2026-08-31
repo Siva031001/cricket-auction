@@ -590,9 +590,22 @@ test('standings strip: purse remaining and players count / max', async () => {
   assert.strictEqual(oneByClass(cells[0], 'display__team-name').textContent, 'Chennai Warriors');
   assert.strictEqual(oneByClass(cells[0], 'display__team-purse').textContent, '₹5,50,000');
   assert.strictEqual(oneByClass(cells[0], 'display__team-count').textContent, '7 / 12');
-  assert.strictEqual(oneByClass(cells[0], 'display__team-slot').textContent, '₹1,10,000 per slot');
-  assert.strictEqual(oneByClass(cells[1], 'display__team-slot'), null,
-    'an absent per-slot figure must not render an empty node');
+
+  // The money is labelled. A bare rupee figure beside a squad count was read as
+  // money SPENT rather than money left.
+  assert.strictEqual(oneByClass(cells[0], 'display__team-label').textContent, 'Remaining');
+
+  // per-slot is gone on purpose. It divided the remaining purse by empty slots,
+  // which implies a per-player price — and every player here goes for a
+  // different amount (DESIGN.md §6.5a), so the number was misleading, not just
+  // clutter. Asserted absent so it cannot creep back.
+  assert.strictEqual(oneByClass(cells[0], 'display__team-slot'), null,
+    'per-slot must not be shown: it implies a price that does not exist');
+  assert.strictEqual(oneByClass(cells[1], 'display__team-slot'), null);
+
+  // A full squad is marked so it reads from the back of the hall.
+  const full = byClass(env.root(), 'display__team-count').filter((e) => e.dataset.full === 'true');
+  assert.strictEqual(full.length, 0, 'neither fixture team is full');
 
   const summary = visibleText(oneByClass(env.root(), 'display__summary'));
   ['72', 'SOLD', '18', '6', 'Not called', '₹42,10,000'].forEach((needle) => {

@@ -932,3 +932,56 @@ body[data-route="organiser-auction"] .auc-zoom__hint {
     position: static;
   }
 }
+
+/* ======================================================================
+   REVISION — feedback item 12: "View large photo" opened in a small panel
+   ======================================================================
+
+   The overlay box was capped at min(90vw, 44rem). 44rem is about 704px, so on
+   any screen wider than that the photo stopped growing and sat in a small card
+   in the middle of a large dark background — the opposite of what the control
+   promises. The image was further limited to 74vh inside that box.
+
+   The point of this overlay (requirement §20) is that the organiser can show a
+   face to the room, so the photo should be limited by the VIEWPORT and nothing
+   else. The chrome shrinks to get out of its way.
+   ====================================================================== */
+
+body[data-route="organiser-auction"] .auc-zoom {
+  padding: clamp(8px, 1.5vh, 24px);
+}
+
+body[data-route="organiser-auction"] .auc-zoom__box {
+  /* No rem cap. The viewport is the only limit. */
+  max-width: 96vw;
+  max-height: 96vh;
+  width: auto;
+  padding: clamp(8px, 1.2vh, 18px);
+  gap: clamp(6px, 1vh, 14px);
+  /* Nearly black rather than the panel surface: a light card around a photo
+     shrinks the apparent size of the photo and glares in a dark hall. */
+  background: #0b1016;
+  /* The box hugs the image instead of scrolling it. */
+  overflow: visible;
+}
+
+body[data-route="organiser-auction"] .auc-zoom__img {
+  /* Fill the space the box now has. Both dimensions are viewport-bound so a
+     portrait photo grows tall and a landscape one grows wide, and neither is
+     clipped. */
+  max-width: 94vw;
+  max-height: 84vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* Keep the close control reachable without stealing height from the photo. */
+body[data-route="organiser-auction"] .auc-zoom__box .btn {
+  align-self: flex-end;
+  padding-block: clamp(6px, 0.9vh, 12px);
+}
+
+body[data-route="organiser-auction"] .auc-zoom__hint {
+  font-size: clamp(0.75rem, 1.4vh, 0.95rem);
+}

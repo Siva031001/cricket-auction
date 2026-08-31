@@ -23,7 +23,8 @@
     "deploy": "clasp push && clasp deploy --deploymentId",
     "login": "clasp login",
     "logout": "clasp logout",
-    "test:behaviour": "node tools/test.js"
+    "test:behaviour": "node tools/test.js",
+    "serve": "node tools/serve.js"
   },
   "devDependencies": {
     "@google/clasp": "^2.4.2"

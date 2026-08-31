@@ -79,6 +79,22 @@ function AuthRoutes() {
       }
     },
 
+    'auth.joinStatus': {
+      auth: 'PUBLIC',
+      methods: ['POST'],
+      /**
+       * PUBLIC for the same reason as auth.organiserJoin: the caller has no
+       * account yet. Reports only whether the token they already hold is still
+       * usable, so the join page can show "sign in" instead of asking someone
+       * who has already joined to set another password.
+       *
+       * Reveals strictly less than the redeem error does, and no identity.
+       */
+      handler: function (payload) {
+        return Auth.joinStatus(payload && payload.token);
+      }
+    },
+
     'auth.organiserJoin': {
       auth: 'PUBLIC',
       methods: ['POST'],

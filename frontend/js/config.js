@@ -23,7 +23,7 @@ const CONFIG = {
    * Re-deploying creates a NEW /exec URL unless you pick "Manage deployments"
    * and edit the existing one. See DESIGN.md §17.3, "the deployment trap".
    * ------------------------------------------------------------------ */
-  API_BASE_URL: 'https://script.google.com/macros/s/AKfycbxbAM-0AVeMJstenyIOhwRvAL4ZwGcnbjaTndAn-XAT5SSfrIzvGoZ3YhxUz-0_QddpPA/exec',
+  API_BASE_URL: 'https://script.google.com/macros/s/AKfycbyvkQ0ZAI7dUglav0HDpegUaxjmvP1H5uMPGkhLHJQhh439bKlwsGOdqUwA6PIDENGXrQ/exec',
 
   /**
    * How often the auction screens re-poll for state.
@@ -31,6 +31,17 @@ const CONFIG = {
    * (CONTRACTS.md §13). 2000 ms is the agreed value.
    */
   POLL_INTERVAL_MS: 2000,
+
+  /**
+   * How long to wait for the API before showing an error, in milliseconds.
+   *
+   * fetch() has no timeout of its own, so without this a half-dead network
+   * leaves every screen on a spinner that never resolves. Raise it if a venue
+   * connection is slow but working; lower it if you would rather see an error
+   * sooner during the auction.
+   * @const {number}
+   */
+  REQUEST_TIMEOUT_MS: 20000,
 
   /**
    * GitHub Pages project sites are served from a sub-path, not the domain

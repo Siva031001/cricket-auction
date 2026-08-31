@@ -73,6 +73,19 @@ const AUCTION_WARN_PURSE_SHARE = 0.25;
 /** Amount above this multiple of the highest sale so far raises an advisory. @const {number} */
 const AUCTION_WARN_ABOVE_HIGHEST = 5;
 
+/**
+ * Width of the projector photo variant, in pixels.
+ *
+ * 1024, not more: frontend/js/image.js uploads the profile photo with
+ * MAX_EDGE 1024, so that is the largest source Drive has. Asking for 1200 would
+ * describe a resolution that does not exist.
+ *
+ * Still a large improvement on photo_thumb_url, which is 320px and visibly soft
+ * filling half a projector screen.
+ * @const {number}
+ */
+const AUCTION_PROJECTOR_PHOTO_WIDTH = 1024;
+
 const Auction = {
 
   // =========================================================================
@@ -266,6 +279,33 @@ const Auction = {
     if (!id) return '';
     const t = teamsById[id];
     return t ? Auction._str(t.team_name) : id;
+  },
+
+  /**
+   * A projector-sized photo URL for a player.
+   *
+   * photo_thumb_url is a 320px variant, sized for a table row. The projector
+   * shows the photo at roughly half the screen, so scaling the thumbnail up is
+   * visibly soft to an audience sitting 15 metres away.
+   *
+   * Built from photo_file_id via Drive.thumbUrl rather than by rewriting the
+   * stored thumb URL, so the width lives in one place and a change to Drive's
+   * URL shape only has to be handled in Drive.gs.
+   *
+   * Returns '' when the player has no photo; the page renders its placeholder.
+   *
+   * @param {!Object} playerRow a Players row
+   * @return {string} an image URL, or ''
+   */
+  _largePhotoUrl(playerRow) {
+    const fileId = Auction._str(playerRow && playerRow.photo_file_id);
+    if (!fileId) return Auction._str(playerRow && playerRow.photo_thumb_url);
+    try {
+      return Drive.thumbUrl(fileId, AUCTION_PROJECTOR_PHOTO_WIDTH);
+    } catch (e) {
+      // Never fail a poll over a photo. A soft picture beats a blank screen.
+      return Auction._str(playerRow && playerRow.photo_thumb_url);
+    }
   },
 
   /**
@@ -522,13 +562,21 @@ const Auction = {
     const slotsAfter = Auction._slotsRemaining(team) + Util.toInt(a.countDelta, 0) - 1;
     const purseAfter = Auction._purseRemaining(team) + Util.toInt(a.purseDelta, 0) - amount;
     if (stats.count > 0 && slotsAfter > 0) {
+      // Compared against the CHEAPEST SALE THAT ACTUALLY HAPPENED, not an
+      // assumed price. The message deliberately quotes that figure and the
+      // total it implies, rather than a purse-divided-by-slots average: an
+      // average reads as a price per player, and no such price exists here
+      // (DESIGN.md §6.5a). Same trigger, honest wording.
       const perSlot = Math.floor(purseAfter / slotsAfter);
       if (perSlot < stats.lowest) {
+        const needed = stats.lowest * slotsAfter;
         out.push({
           code: AUCTION_WARN.SQUAD_AT_RISK,
           message: 'This leaves ' + name + ' ' + Util.formatINR(purseAfter) + ' for ' + slotsAfter +
-            ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') + ' — ' + Util.formatINR(perSlot) +
-            ' each, below the cheapest sale so far of ' + Util.formatINR(stats.lowest) + '.'
+            ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') + '. The cheapest sale so far was ' +
+            Util.formatINR(stats.lowest) + ', so filling ' +
+            (slotsAfter === 1 ? 'it' : 'them') + ' at that price would need about ' +
+            Util.formatINR(needed) + '.'
         });
       }
     }
@@ -656,10 +704,11 @@ const Auction = {
         // says the amber banner belongs. Costs ~20 bytes per team.
         purse_total: Util.toInt(t.purse_total, 0),
         players_count: Util.toInt(t.players_count, 0),
-        max_players: Util.toInt(t.max_players, 0),
-        per_slot_remaining_display: slots > 0
-          ? Util.formatINR(Math.floor(remaining / slots))
-          : 'Squad full'
+        max_players: Util.toInt(t.max_players, 0)
+        // per_slot_remaining deliberately removed. It averaged the remaining
+        // purse across empty slots, which implies every player costs the same.
+        // Prices here are genuinely unpredictable (DESIGN.md §6.5a), so the
+        // number was not just noise on the projector — it was misleading.
       });
     }
     teams.sort((a, b) => a.team_name.localeCompare(b.team_name));
@@ -680,6 +729,11 @@ const Auction = {
           style: Auction._str(p.style),
           age_years: Util.toInt(p.age_years, 0),
           photo_thumb_url: Auction._str(p.photo_thumb_url),
+          // A large variant for the projector. The thumbnail is 320px wide and
+          // the display shows the photo at roughly half a 1024-1920px screen,
+          // so scaling the thumbnail up looks soft to an audience. Built from
+          // the stored file id rather than by string-munging the thumb URL.
+          photo_url: Auction._largePhotoUrl(p),
           auction_status: Auction._str(p.auction_status) || ENUM.AUCTION_STATUS.PENDING,
           team_name: Auction._teamName(teamsById, p.team_id),
           sold_amount_display: soldAmount > 0 ? Util.formatINR(soldAmount) : ''
@@ -691,6 +745,11 @@ const Auction = {
     return {
       v: version,
       status: Auction._str(trn.status),
+      // The audience reads this. Without it display.js fell back to the raw
+      // tournament id ("TRN_ghb1jr2xgs84"), which is meaningless on a screen in
+      // front of a hall. Safe to expose: the name is already public on the
+      // registration page.
+      tournament_name: Auction._str(trn.name),
       current: current,
       teams: teams,
       summary: {
@@ -1033,8 +1092,9 @@ const Auction = {
         team_name: src[i].team_name,
         purse_remaining_display: src[i].purse_remaining_display,
         players_count: src[i].players_count,
-        max_players: src[i].max_players,
-        per_slot_remaining_display: src[i].per_slot_remaining_display
+        max_players: src[i].max_players
+        // per_slot_remaining_display removed: _buildSnapshot no longer emits it,
+        // so this copied undefined and JSON.stringify dropped the key anyway.
       });
     }
 
@@ -1044,6 +1104,10 @@ const Auction = {
       v: snap.v,
       same: false,
       status: snap.status,
+      // Safe to expose: the tournament name is already public on the
+      // registration page, and the projector is showing it to a hall.
+      // Without it the header falls back to a placeholder word.
+      tournament_name: snap.tournament_name,
       current: c ? {
         serial_no: c.serial_no,
         name: c.name,
@@ -1051,6 +1115,11 @@ const Auction = {
         style: c.style,
         age_years: c.age_years,
         photo_thumb_url: c.photo_thumb_url,
+        // The 1024px variant. This is an allow-list, so a field added to the
+        // snapshot does NOT reach the projector until it is named here — which
+        // is the point, but it also means the large photo was silently
+        // unreachable until this line existed.
+        photo_url: c.photo_url,
         auction_status: c.auction_status,
         team_name: c.team_name,
         sold_amount_display: c.sold_amount_display
@@ -1804,8 +1873,7 @@ const Auction = {
       purse_remaining_display: Util.formatINR(remaining),
       players_count: Util.toInt(team.players_count, 0),
       max_players: Util.toInt(team.max_players, 0),
-      slots_remaining: slots,
-      per_slot_remaining_display: slots > 0 ? Util.formatINR(Math.floor(remaining / slots)) : 'Squad full'
+      slots_remaining: slots
     };
   },
 

@@ -138,7 +138,14 @@ function checkBackend() {
   // 4. Cross-module symbol resolution. A typo like Util.formatIst only shows up
   //    at call time in Apps Script, which could be mid-auction.
   vm.runInContext(
+    // EVERY module, not a subset. This list was missing Teams, Payments,
+    // Auction, Organisers and Reports, so a call to a function that does not
+    // exist on any of them passed silently — which it did: Teams._trashLogo
+    // (the real name is _trashQuietly) was caught by reading the code, not by
+    // this check. A missing module here is a hole in the only guard against a
+    // typo that would otherwise surface mid-auction.
     'globalThis.__mods = {Util, Repo, Cache, Auth, Audit, Drive, Players, Tournaments, ' +
+    'Teams, Payments, Auction, Organisers, Reports, ' +
     'SHEETS, HEADERS, ENUM, ERR, ID_PREFIX, DEFAULTS};', ctx
   );
   let missing = 0;
@@ -148,6 +155,11 @@ function checkBackend() {
       if (!obj || typeof obj !== 'object') continue;
       const re = new RegExp('(?<![\\w$.])' + name + '\\.([A-Za-z_$][\\w$]*)', 'g');
       for (const m of src.matchAll(re)) {
+        // "Payments.gs" in prose is a FILENAME, not a member reference. Module
+        // names double as file names throughout this project, so every mention
+        // of a sibling file in a string or a surviving comment would otherwise
+        // be reported as a missing function.
+        if (m[1] === 'gs') continue;
         if (!(m[1] in obj)) { bad(`${f}: ${name}.${m[1]} does not exist`); missing++; }
       }
     }
@@ -213,6 +225,9 @@ function checkRoutes(ctx) {
     // The organiser has no account yet, so there is no session token to send;
     // the one-time join token in the payload is the credential (PHASE3 §1).
     'auth.organiserJoin',
+    // Reports only whether a join token the caller already holds is still
+    // usable. No identity, and strictly less than the redeem error reveals.
+    'auth.joinStatus',
     'tournament.getPublic', 'player.register', 'player.checkMobile',
     // The projector runs unattended on a venue laptop with no operator signed
     // in. Its credential is the tournament's display_token in the query string
@@ -284,10 +299,66 @@ function checkFrontend() {
   if (fs.existsSync(indexPath)) {
     const html = fs.readFileSync(indexPath, 'utf8');
     let broken = 0;
-    for (const m of html.matchAll(/(?:src|href)="((?!https?:|\/\/)[^"]+)"/g)) {
-      if (!fs.existsSync(path.join(FRONTEND, m[1]))) { bad(`index.html references missing ${m[1]}`); broken++; }
+    // Root-absolute paths are resolved against BASE_PATH, not the filesystem,
+    // and <base href> is not a file at all — so both are stripped to a
+    // frontend-relative path before checking, and a bare directory (the base
+    // itself) is skipped.
+    const baseCfg = (function () {
+      const f = path.join(FRONTEND, 'js/config.js');
+      if (!fs.existsSync(f)) return '';
+      const m = fs.readFileSync(f, 'utf8').match(/BASE_PATH:\s*'([^']*)'/);
+      return m ? m[1].replace(/\/$/, '') : '';
+    }());
+
+    for (const m of html.matchAll(/(?:src|href)="((?!https?:|\/\/|#|data:|mailto:)[^"]+)"/g)) {
+      let rel = m[1];
+      if (rel.charAt(0) === '/') {
+        if (baseCfg && rel.indexOf(baseCfg + '/') === 0) rel = rel.slice(baseCfg.length + 1);
+        else rel = rel.replace(/^\//, '');
+      }
+      if (rel === '' || rel.endsWith('/')) continue;   // the <base href> itself
+      if (!fs.existsSync(path.join(FRONTEND, rel))) { bad(`index.html references missing ${m[1]}`); broken++; }
     }
     if (!broken) ok('every local file index.html references exists');
+  }
+
+  // Relative asset paths + path routing = a blank page on every deep route.
+  //
+  // A browser resolves src="js/app.js" against the DOCUMENT url, so from
+  // /cricket-auction/admin/login it asks for /cricket-auction/admin/js/app.js.
+  // Nothing exists there, every script 404s, and the page renders blank — in
+  // production as much as locally. The existence check above did not catch it
+  // because the files DO exist; it is the resolution that was wrong.
+  //
+  // Either a <base href> or root-absolute paths make it correct. If <base> is
+  // used it has to agree with CONFIG.BASE_PATH or the two fight each other.
+  if (fs.existsSync(indexPath)) {
+    const html = fs.readFileSync(indexPath, 'utf8');
+    const baseM = html.match(/<base\s+href="([^"]*)"/i);
+    const relAssets = [...html.matchAll(/(?:src|href)="((?!https?:|\/\/|\/|#|data:|mailto:)[^"]+)"/g)]
+      .map((m) => m[1]);
+
+    let basePath = '';
+    const cfgFile = path.join(FRONTEND, 'js/config.js');
+    if (fs.existsSync(cfgFile)) {
+      const bm = fs.readFileSync(cfgFile, 'utf8').match(/BASE_PATH:\s*'([^']*)'/);
+      basePath = bm ? bm[1] : '';
+    }
+
+    if (relAssets.length && !baseM) {
+      bad(`index.html has ${relAssets.length} relative asset path(s) and no <base href>: ` +
+          'every route deeper than one segment will render blank');
+    } else if (baseM) {
+      const want = basePath ? (basePath.replace(/\/$/, '') + '/') : '/';
+      if (baseM[1] !== want) {
+        bad(`<base href="${baseM[1]}" does not match CONFIG.BASE_PATH "${basePath}" ` +
+            `(expected "${want}")`);
+      } else {
+        ok(`<base href="${baseM[1]}" matches BASE_PATH, so deep routes load their assets`);
+      }
+    } else {
+      ok('index.html uses root-absolute asset paths');
+    }
   }
 
   // The placeholder must never reach production; the Pages workflow also checks.

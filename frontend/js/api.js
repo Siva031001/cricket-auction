@@ -39,6 +39,17 @@
 const API = {
 
   /**
+   * How long to wait for a response before giving up, in milliseconds.
+   *
+   * 20s: comfortably longer than a cold Apps Script start plus a 400-row export
+   * (measured at a couple of seconds), short enough that a person watching a
+   * spinner gets a real answer. Override per deployment with
+   * CONFIG.REQUEST_TIMEOUT_MS.
+   * @const {number}
+   */
+  DEFAULT_TIMEOUT_MS: 20000,
+
+  /**
    * The `v` (auction state version) field from the most recent envelope, or
    * null. Polling code compares this to decide whether to re-render.
    * @type {number|null}
@@ -215,16 +226,50 @@ const API = {
 
     let response;
 
-    return fetch(url, init)
+    // A TIMEOUT. fetch() has none of its own: a request to a host that accepts
+    // the connection and then says nothing hangs for as long as the OS allows,
+    // which is minutes. Every screen here shows a spinner while a call is in
+    // flight, so with no timeout a slow or half-dead network does not produce an
+    // error — it produces a spinner that never stops. That is what happened on
+    // /organiser/dashboard, and at a venue on failing wifi it would happen to
+    // the auction console mid-auction.
+    //
+    // An abort is reported as NETWORK, the same code as any other transport
+    // failure, so every caller's existing handling applies unchanged.
+    const ms = Number(CONFIG.REQUEST_TIMEOUT_MS) || API.DEFAULT_TIMEOUT_MS;
+    let timer = null;
+    let timedOut = false;
+    const opts = Object.assign({}, init);
+
+    if (typeof AbortController === 'function') {
+      const controller = new AbortController();
+      opts.signal = controller.signal;
+      timer = window.setTimeout(function () {
+        timedOut = true;
+        controller.abort();
+      }, ms);
+    }
+
+    const clear = function () {
+      if (timer !== null) { window.clearTimeout(timer); timer = null; }
+    };
+
+    return fetch(url, opts)
       .catch(function (networkErr) {
+        clear();
         // fetch() only rejects for genuine transport failures: offline, DNS,
-        // TLS, or a CORS rule the browser refused. HTTP 500 still resolves.
+        // TLS, a CORS rule the browser refused — or our own abort above.
         throw {
           code: 'NETWORK',
-          message: 'Could not reach the server. Check the internet connection and try again.',
+          message: timedOut
+            ? 'The server did not respond within ' + Math.round(ms / 1000) +
+              ' seconds. Check the internet connection and try again.'
+            : 'Could not reach the server. Check the internet connection and try again.',
+          timeout: timedOut,
           cause: String(networkErr && networkErr.message ? networkErr.message : networkErr)
         };
       })
+      .then(function (res) { clear(); return res; })
       .then(function (res) {
         response = res;
         return res.text();

@@ -38,10 +38,12 @@ Adding `max_registrations` is one field and one check. The cheapest option — o
 
 ## Functional gaps
 
-### 5. Team logo cannot be changed after creation
-`team.create` accepts a logo; `team.update` does not. A Drive upload cannot happen inside the auction lock, and the workaround (upload before the lock, write the id inside it, sweep orphans) was out of scope for Phase 3.
+### 5. Team logo can now be changed — RESOLVED
+`team.update` accepts a logo and a `removeLogo` flag. The upload happens **before** the lock and only the resulting file id is written inside it — the same shape as player registration (`DESIGN.md` §6.2), because holding the script-wide lock through a Drive upload would stall every sale in a live auction behind someone changing a picture.
 
-Cosmetic only. The fix is the pattern `Players.register` already uses.
+The superseded file is trashed only after the sheet has stopped pointing at it, so a failure in between leaves a stray file rather than a team whose logo id points at nothing.
+
+The organiser dashboard offers the field on team edit, and the "remove" checkbox appears only when there is a logo to remove.
 
 ### 5a. Counter drift is now repairable from the UI — RESOLVED
 The reports screen detected drift between the cached team totals and the auction history, but only told the admin to "run team.recount" — an action name, not something they could do. It now carries a **Repair the stored totals** button that calls the action and reloads.
@@ -92,9 +94,20 @@ So `Offline.sync(callFn)` takes an injected callback precisely so the caller can
 
 **Test in a browser against the real deployment.** If the bytes are unreadable, the fallback is to route images through the Apps Script API as base64 — slower, but it works.
 
-### 14. Two integration wires still open
-- **`API.getBytes(url)`** does not exist in `api.js`. Without it, `Offline.downloadPack` cannot cache photos (see item 13). Alternative: call `Offline.setTransport({imageFn})` at startup.
-- **The display snapshot carries no roster.** `display.js` pre-warms each thumbnail the first time that player appears, which is best-effort. Adding `roster: [{photo_thumb_url}]` to the `auction.displayState` snapshot would make the "instant reveal" guarantee complete.
+### 14. Offline pack: wired, with one honest limitation
+The **Download offline pack** control now exists on the auction console, with progress, pack status, and a partial pack reported as PARTIAL rather than ready.
+
+Still open, and it is item 13: photograph bytes may not be readable from Drive cross-origin. When they are not, the console says so plainly — the pack holds player details only, names and serials work offline, pictures do not. It never claims a pack is ready when the photos are missing.
+
+**The display snapshot still carries no roster.** `display.js` pre-warms each thumbnail the first time that player appears, which is best-effort. Adding `roster: [{photo_thumb_url}]` to the `auction.displayState` snapshot would make the "instant reveal" guarantee complete.
+
+### 17. Two harness assertions were passing for the wrong reason — RESOLVED
+Worth recording, because both are the failure mode that makes a test suite worthless:
+
+1. **Mutation M8** in `organiser-auction.test.js` spliced in code that did not parse. A `SyntaxError` made the mutant look detected while proving nothing — *any* test would have "caught" it. Now a semantically-wrong-but-runnable mutation.
+2. **The setup-warning assertion** in `router-smoke.test.js` counted `.banner--error` after visiting a route that had no page module, so it was detecting the missing-module error panel, not a setup warning. The harness never rendered one. It now renders the warning and asserts it survives navigation.
+
+A test that passes against broken code is worse than no test.
 
 ### 15. Withdrawn players in the player export
 The 11 CSV columns are fixed by the requirement and none carries withdrawal, so Payment Status renders as `Verified (withdrawn)`. A 12th column would be cleaner if the format can change.
@@ -105,6 +118,14 @@ The 11 CSV columns are fixed by the requirement and none carries withdrawal, so 
 ---
 
 ## Deployment
+
+### 18. Relative asset paths broke every deep route — RESOLVED
+`index.html` referenced its scripts and stylesheets relatively (`src="js/app.js"`). A browser resolves those against the **document URL**, and this app uses path routing — so at `/cricket-auction/admin/login` it requested `/cricket-auction/admin/js/app.js`, which does not exist. Every asset 404'd and the page rendered blank.
+
+This was a production bug, not a local one: GitHub Pages would have behaved identically. Only `/cricket-auction/` itself worked, which is why it survived every check — the files existed, so the existence check passed; it was the *resolution* that was wrong.
+
+Fixed with `<base href="/cricket-auction/">`. **It must match `CONFIG.BASE_PATH`**, and `tools/check.js` now fails if they disagree or if relative paths appear with no base.
+
 
 ### 11. GitHub Pages Source must be "GitHub Actions"
 Pages cannot serve a `frontend/` folder from a branch. `.github/workflows/pages.yml` publishes it instead. The workflow also fails the build if `API_BASE_URL` is still the placeholder.

@@ -224,8 +224,13 @@ function seedAdmin(email, displayName, password) {
   if (!String(displayName || '').trim()) {
     throw Util.AppError(ERR.VALIDATION_FAILED, 'Please give a display name for the admin.');
   }
-  if (!password || String(password).length < 10) {
-    throw Util.AppError(ERR.VALIDATION_FAILED, 'The admin password must be at least 10 characters long.');
+  // Reads Auth's constant rather than repeating a number. The two drifted once
+  // already: Setup allowed 8 while the app required 10, so the seeded admin
+  // could have a password too weak to change through the UI.
+  const minLen = (typeof Auth !== 'undefined' && Auth.MIN_PASSWORD_LEN) ? Auth.MIN_PASSWORD_LEN : 4;
+  if (!password || String(password).length < minLen) {
+    throw Util.AppError(ERR.VALIDATION_FAILED,
+      'The admin password must be at least ' + minLen + ' characters long.');
   }
 
   const users = Repo.readAll(usersTab);

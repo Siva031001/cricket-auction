@@ -412,7 +412,7 @@ async function testJoinHappyPath() {
   eq(document.body.dataset.route, 'organiser-join', 'body data-route is organiser-join');
 
   // The rule is on screen BEFORE anything is typed.
-  has(App.root.textContent, 'At least 10 characters',
+  has(App.root.textContent, 'At least ' + OrganiserJoinPage.MIN_PASSWORD + ' characters',
     'the password rule is printed before the boxes, not after a failure');
 
   const p1 = inputNamed(App.root, 'password');
@@ -448,6 +448,78 @@ async function testJoinHappyPath() {
   eq(nav.opts.replace, true, 'and replaces the join URL so Back cannot reuse it');
 }
 
+/**
+ * BUG 8, REPORTED TWICE. An organiser sets their password, is redirected to the
+ * dashboard, then later opens the join link again — bookmarked, back button, or
+ * simply the message the admin sent them. The page used to show the password
+ * form regardless, they set another password, and got a deliberately vague
+ * "this link is not valid" with no route to the sign-in screen. The account had
+ * worked the whole time.
+ *
+ * Three separate guards, so a regression in any one of them fails here.
+ */
+async function testJoinAlreadyDoneDoesNotAskAgain() {
+  console.log('\n[1c] a used link never asks for a password again (bug 8)');
+
+  /* --- Guard 1: already signed in -> straight to the dashboard ---------- */
+  reset();
+  API.setToken('LIVE_SESSION');
+  respond('auth.me', () => Promise.resolve({ user_id: 'USR_9', role: 'ORGANISER', tournament_id: 'TRN_9' }));
+
+  OrganiserJoinPage.render(joinCtx('JOIN_TOKEN_ABC'));
+  await flush();
+
+  eq(log.navigations.length, 1, 'a signed-in organiser is redirected, not asked again');
+  ok(String(log.navigations[0].to).indexOf('/organiser/dashboard') !== -1,
+    'and lands on the organiser dashboard: ' + log.navigations[0].to);
+  eq(callsTo('auth.organiserJoin').length, 0, 'nothing is redeemed');
+  ok(App.root.textContent.indexOf('Set your password') === -1,
+    'the password form is never rendered');
+
+  /* --- Guard 2: no session, link already used -> "sign in" -------------- */
+  reset();
+  API.clearToken();   // no session: this is the not-signed-in path
+  respond('auth.joinStatus', () => Promise.resolve({ pending: false, joined: true }));
+
+  OrganiserJoinPage.render(joinCtx('JOIN_TOKEN_ABC'));
+  await flush();
+
+  const text = App.root.textContent;
+  ok(text.indexOf('already set up') !== -1, 'it says the account already exists: ' + text.slice(0, 120));
+  ok(text.indexOf('Set your password') === -1, 'and does NOT ask for a password again');
+
+  // The whole point of the report was "how do I log in". There must be a
+  // control that answers it.
+  const signIn = all(App.root).filter(function (n) {
+    return n.tagName === 'A' && /sign in/i.test(n.textContent || '');
+  });
+  ok(signIn.length >= 1, 'there is a visible way to reach the sign-in screen');
+  // .href as a property or as an attribute — the fake DOM keeps them apart,
+  // a real browser does not.
+  const href = String(signIn[0].href || signIn[0].getAttribute('href') || '');
+  ok(href.indexOf('/organiser/login') !== -1, 'pointing at the organiser sign-in: ' + href);
+
+  /* --- Guard 3: link still pending -> the form, as before --------------- */
+  reset();
+  API.clearToken();   // no session: this is the not-signed-in path
+  respond('auth.joinStatus', () => Promise.resolve({ pending: true, joined: false }));
+
+  OrganiserJoinPage.render(joinCtx('JOIN_TOKEN_ABC'));
+  await flush();
+  ok(App.root.textContent.indexOf('Set your password') !== -1,
+    'a genuinely unused link still gets the form');
+
+  /* --- Guard 4: the status call failing must not lock anyone out -------- */
+  reset();
+  API.clearToken();   // no session: this is the not-signed-in path
+  respond('auth.joinStatus', () => { throw { code: 'NETWORK', message: 'offline' }; });
+
+  OrganiserJoinPage.render(joinCtx('JOIN_TOKEN_ABC'));
+  await flush();
+  ok(App.root.textContent.indexOf('Set your password') !== -1,
+    'if the check cannot run, the form is still offered — redeem is authoritative');
+}
+
 async function testJoinMismatchBlockedLocally() {
   console.log('\n[2] a mismatched password pair never reaches the network');
   reset();
@@ -469,12 +541,19 @@ async function testJoinMismatchBlockedLocally() {
   reset();
   OrganiserJoinPage.render(joinCtx('JOIN_TOKEN_ABC'));
   await flush();
-  inputNamed(App.root, 'password').value = 'short';
-  inputNamed(App.root, 'password2').value = 'short';
+  // Derived from the page's own constant. A hardcoded 'short' silently became
+  // VALID when the minimum dropped from 10 to 4, so this stopped testing
+  // anything — it asserted a request was not sent while the page happily sent
+  // one. The minimum is an owner decision and will move again.
+  const tooShort = 'a'.repeat(Math.max(1, OrganiserJoinPage.MIN_PASSWORD - 1));
+  inputNamed(App.root, 'password').value = tooShort;
+  inputNamed(App.root, 'password2').value = tooShort;
   findButton(App.root, 'Set password and continue').click();
   await flush();
-  eq(callsTo('auth.organiserJoin').length, 0, 'a 5-character password is not sent either');
-  has(App.root.textContent, 'at least 10 characters. This one has 5.',
+  eq(callsTo('auth.organiserJoin').length, 0,
+    'a password one character under the minimum is not sent either');
+  has(App.root.textContent,
+    'at least ' + OrganiserJoinPage.MIN_PASSWORD + ' characters. This one has ' + tooShort.length + '.',
     'the message names how short it actually is');
 }
 
@@ -603,7 +682,7 @@ async function testBatchRowsAddAndRemove() {
 }
 
 async function testPerSlotRemaining() {
-  console.log('\n[7] ₹ per empty slot renders, and is marked when it drops low');
+  console.log('\n[7] slots left renders, and a squeezed team is still flagged');
   reset();
 
   await renderDashboard(listResponse([
@@ -620,18 +699,21 @@ async function testPerSlotRemaining() {
   ]));
 
   const headers = byTag(byTag(App.root, 'THEAD')[0], 'TH').map((th) => th.textContent);
-  has(headers.join('|'), '₹ per empty slot', 'the column is labelled in plain words');
+  has(headers.join('|'), 'Slots left', 'the column reports slots left, not a per-slot price');
   eq(byTag(byTag(App.root, 'THEAD')[0], 'TH').filter((th) => th.scope === 'col').length,
     headers.length, 'every header cell is th scope="col"');
 
   const cells = byClass(App.root, 'org-teams__slot');
   eq(cells.length, 4, 'one per-slot cell per team');
 
-  has(cells[0].textContent, '₹40,000', "the server's formatted figure is shown");
+  has(cells[0].textContent, 'slots', 'the slot count is shown, not a rupee figure');
+  ok(cells[0].textContent.indexOf('₹') === -1,
+    'and no per-slot rupee figure: every player sells for a different amount');
   has(cells[0].className, 'org-teams__slot--ok', 'a comfortable team is not flagged');
   lacks(cells[0].textContent, 'Low', 'and carries no warning word');
 
-  has(cells[1].textContent, '₹14,285', 'the squeezed team shows its figure');
+  has(cells[1].textContent, '7 slots', 'the squeezed team shows its slots left');
+  ok(cells[1].textContent.indexOf('₹') === -1, 'and never a per-slot rupee figure');
   has(cells[1].className, 'org-teams__slot--low', 'the squeezed team is flagged low');
   has(cells[1].textContent, 'Low', 'the flag is a WORD, not only a colour');
 
@@ -992,7 +1074,8 @@ async function testNoInnerHtmlAnywhere() {
   }
 
   const tests = [
-    testJoinHappyPath, testJoinMismatchBlockedLocally, testJoinDeadLink,
+    testJoinHappyPath, testJoinAlreadyDoneDoesNotAskAgain,
+    testJoinMismatchBlockedLocally, testJoinDeadLink,
     testJoinNoTokenAtAll,
     testBatchCreationIsOneCall, testBatchRejectsDuplicatesLocally, testBatchRowsAddAndRemove, testPerSlotRemaining,
     testUpdateErrorsAreVerbatim, testDeleteNotEmpty, testSquadView, testHostileTeamName,

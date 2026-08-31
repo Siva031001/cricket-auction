@@ -35,7 +35,7 @@ const TEST_FIXTURES = Object.freeze({
   EMAIL_DOMAIN: '@zztest.invalid',
   /** Fake actor id recorded as created_by / actor on fixture rows. */
   ACTOR: 'USR_zztest000000',
-  /** Passwords must be >= 10 chars (CONTRACTS.md §7); this one is 16. */
+  /** Comfortably over Auth.MIN_PASSWORD_LEN whatever it is set to; 16 chars. */
   PASSWORD: 'TestPassw0rd!234',
   /**
    * Marker for a photo_file_id / screenshot_file_id that was written straight
@@ -3977,13 +3977,15 @@ const Suites = {
             'Got "' + usedErr.message + '"');
         });
 
-      T.test('a password under 10 characters is refused and the link still works after',
+      T.test('a password under the minimum is refused and the link still works after',
         function () {
           const f = invite('weakpw');
 
           // CONTRACTS-PHASE3 §1 rule 2: identical to Auth.createUser.
-          T.assertEqual(Auth.MIN_PASSWORD_LEN, 10,
-            'the minimum is 10 characters (DESIGN.md §16 risk 6)');
+          // The number itself is a tournament-owner decision, so this asserts
+          // the RULE is applied rather than pinning a value that will change.
+          T.assert(Auth.MIN_PASSWORD_LEN >= 1,
+            'there is a minimum password length and every check reads it');
 
           const nine = 'zzShort9!';
           T.assertEqual(nine.length, 9, 'fixture check: the weak password is 9 characters');
@@ -4008,7 +4010,7 @@ const Suites = {
           T.assertEqual(ten.length, 10, 'fixture check: exactly at the boundary');
           const ok = join(f.token, ten);
           T.assert(ok && ok.token,
-            'exactly 10 characters is allowed, so the rule is >= 10 and not > 10');
+            'a password of exactly MIN_PASSWORD_LEN is allowed: the rule is >= not >');
 
           // And the password that was set is the one that now signs them in.
           const login = Auth.login(f.email, ten, 'zz-test-agent');
@@ -6013,14 +6015,25 @@ const Suites = {
               'though its key does not');
           });
 
+          // photo_url is the 1024px projector variant; photo_thumb_url (320px)
+          // stays as the fallback. Neither identifies a person beyond the photo
+          // the audience is already looking at.
           T.assertEqual(Object.keys(out.current).sort(), [
-            'age_years', 'auction_status', 'name', 'photo_thumb_url', 'role', 'serial_no',
-            'sold_amount_display', 'style', 'team_name'
+            'age_years', 'auction_status', 'name', 'photo_thumb_url', 'photo_url',
+            'role', 'serial_no', 'sold_amount_display', 'style', 'team_name'
           ], 'the projector card is exactly what §4.5 says the screen shows');
+
+          // per_slot_remaining_display is deliberately gone: it divided the
+          // remaining purse by empty slots, implying a per-player price, and
+          // every player here sells for a different amount (DESIGN.md §6.5a).
           T.assertEqual(Object.keys(out.teams[0]).sort(), [
-            'max_players', 'per_slot_remaining_display', 'players_count',
-            'purse_remaining_display', 'team_name'
-          ], 'and a team strip entry is exactly the five fields it renders');
+            'max_players', 'players_count', 'purse_remaining_display', 'team_name'
+          ], 'and a team strip entry is exactly the four fields it renders');
+
+          // The tournament NAME reaches the projector; its id must not be the
+          // thing an audience reads.
+          T.assert(!Util.isBlank(out.tournament_name),
+            'the projector feed carries the tournament name');
 
           // The 2-second poll: unchanged means ~30 bytes and no snapshot at all.
           const same = Suites._call('auction.displayState',
@@ -7588,7 +7601,7 @@ const Suites = {
           T._errText(threw));
       });
 
-      T.test('createUser rejects a password under 10 characters', function () {
+      T.test('createUser rejects a password under the minimum', function () {
         T.assertThrows(() => Auth.createUser({
           email: mail('shortpw'), displayName: 'ZZ Short', password: 'short123',  // 8 chars
           role: ENUM.USER_ROLE.ADMIN, tournamentId: null

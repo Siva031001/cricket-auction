@@ -475,7 +475,13 @@ t('batch writes one audit row per team', () => {
   eq(rows.length, 9, '8 batch + 1 single Chennai Warriors');
 });
 
-console.log('\n=== Phase 3 teams: list and per_slot_remaining ===');
+console.log('\n=== Phase 3 teams: list, purse and slots ===');
+
+// per_slot_remaining was REMOVED on the tournament owner's instruction: every
+// player sells for a different amount, so remaining-purse-divided-by-slots reads
+// as a price per player when none exists. The tests below assert the field stays
+// absent, and check purse_remaining / slots_remaining instead — the two figures
+// that are actually true.
 
 t('list returns every team of the tournament, and only those', () => {
   const out = T.list({ tournamentId: TID2 }, admin);
@@ -483,18 +489,20 @@ t('list returns every team of the tournament, and only those', () => {
   out.teams.forEach((t2) => ok(t2.team_id.indexOf('TEM_') === 0));
 });
 
-t('per_slot_remaining = floor(purse_remaining / slots_remaining)', () => {
+t('list returns purse_remaining and slots_remaining, and NO per-slot average', () => {
   // 500000 purse, 12 slots, nothing spent -> floor(500000/12) = 41666
   const out = T.list({ tournamentId: TID2 }, admin);
   const alpha = out.teams.find((x) => x.team_name === 'Alpha XI');
   eq(alpha.purse_remaining, 500000);
   eq(alpha.slots_remaining, 12);
-  eq(alpha.per_slot_remaining, 41666);
-  eq(alpha.per_slot_remaining_display, '₹41,666');
+  eq(alpha.per_slot_remaining, undefined, 'per-slot must not come back');
+  eq(alpha.per_slot_remaining_display, undefined, 'nor its display form');
+  ok(typeof alpha.purse_remaining === 'number', 'purse_remaining is present');
+  ok(typeof alpha.slots_remaining === 'number', 'slots_remaining is present');
   eq(alpha.purse_remaining_display, '₹5,00,000');
 });
 
-t('per_slot_remaining reflects a partly spent purse', () => {
+t('a partly spent purse reports the right remaining figures', () => {
   // Hand-set the cached counters the way Phase 4 will, then read them back.
   const row = G.Repo.findBy('Teams', 'team_name', 'Bravo XI');
   vm.runInContext('Repo.updateRow(SHEETS.TEAMS, ' + row._row + ', {purse_used: 125000, players_count: 3});', ctx);
@@ -503,18 +511,18 @@ t('per_slot_remaining reflects a partly spent purse', () => {
   eq(bravo.purse_used, 125000);
   eq(bravo.purse_remaining, 375000);
   eq(bravo.slots_remaining, 9);
-  eq(bravo.per_slot_remaining, 41666);      // floor(375000/9)
+  eq(bravo.per_slot_remaining, undefined, 'no per-slot average');
   eq(bravo.players_count, 3);
 });
 
-t('per_slot_remaining is null when the squad is full', () => {
+t('a full squad reports zero slots remaining', () => {
   const row = G.Repo.findBy('Teams', 'team_name', 'Charlie XI');
   vm.runInContext('Repo.updateRow(SHEETS.TEAMS, ' + row._row + ', {purse_used: 400000, players_count: 12});', ctx);
   const out = T.list({ tournamentId: TID2 }, admin);
   const c = out.teams.find((x) => x.team_name === 'Charlie XI');
   eq(c.slots_remaining, 0);
-  eq(c.per_slot_remaining, null);
-  eq(c.per_slot_remaining_display, '');
+  eq(c.slots_remaining, 0, 'a full squad has no slots left');
+  eq(c.per_slot_remaining, undefined);
   eq(c.purse_remaining, 100000, 'money left over on a full squad is still reported');
 });
 
@@ -525,7 +533,7 @@ t('a zero-slot team (max_players already reached at 0 spare) is null, not a divi
   const out = T.list({ tournamentId: TID }, org);
   const one = out.teams.find((x) => x.team_id === c.team_id);
   eq(one.slots_remaining, 0);
-  eq(one.per_slot_remaining, null);
+  eq(one.slots_remaining, 0);
   eq(one.purse_remaining, 0);
 });
 
@@ -535,7 +543,7 @@ t('an over-full squad clamps slots_remaining at zero', () => {
   const out = T.list({ tournamentId: TID2 }, admin);
   const d = out.teams.find((x) => x.team_name === 'Delta XI');
   eq(d.slots_remaining, 0);
-  eq(d.per_slot_remaining, null);
+  eq(d.slots_remaining, 0, 'clamped at zero, never negative');
 });
 
 t('totals add up across the tournament', () => {
@@ -666,7 +674,7 @@ t('raising max_players is always allowed', () => {
   const out = T.update({ teamId: UP.team_id, maxPlayers: 13 }, admin);
   eq(out.max_players, 13);
   eq(out.slots_remaining, 1);
-  eq(out.per_slot_remaining, 75000, 'floor((500000-425000)/1)');
+  eq(out.slots_remaining, 1, 'one slot opened up');
   eq(out.changed.max_players.from, 12);
   eq(out.changed.max_players.to, 13);
 });
@@ -680,7 +688,7 @@ t('lowering purse_total to exactly purse_used is allowed', () => {
   const out = T.update({ teamId: UP.team_id, purseTotal: 425000 }, admin);
   eq(out.purse_total, 425000);
   eq(out.purse_remaining, 0);
-  eq(out.per_slot_remaining, 0);
+  eq(out.purse_remaining, 0, 'purse spent exactly to zero');
 });
 
 t('raising purse_total is always allowed', () => {

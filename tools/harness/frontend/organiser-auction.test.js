@@ -710,7 +710,7 @@ test('search: auction.search is read-only and choosing a row calls that serial',
  * C. The confirm dialog — the main safety feature
  * ---------------------------------------------------------------------- */
 
-test('confirm: the dialog shows the exact remaining purse and per-slot figures (DESIGN §6.5a)', async () => {
+test('confirm: the dialog shows the exact remaining purse and slot count (DESIGN §6.5a)', async () => {
   const env = await open({
     handlers: {
       'auction.markSold': () => ({
@@ -725,8 +725,13 @@ test('confirm: the dialog shows the exact remaining purse and per-slot figures (
   // The live consequence line, before anything is pressed.
   assert.strictEqual(els.preview.textContent,
     'Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000? ' +
-    'Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.',
+    'Leaves ₹4,75,000 for 3 more slots.',
     'the arithmetic must be exact: ' + els.preview.textContent);
+
+  // No per-slot average. Every player sells for a different amount, so
+  // remaining-purse-over-empty-slots states a price that does not exist.
+  assert.ok(els.preview.textContent.indexOf('per slot') === -1,
+    'the preview must not quote a per-slot price');
 
   els.go.click();
   await flush();
@@ -735,8 +740,8 @@ test('confirm: the dialog shows the exact remaining purse and per-slot figures (
   assert.strictEqual(env.confirms[0].title,
     'Sell Raj Kumar (#27) to Chennai Warriors for ₹75,000?');
   assert.strictEqual(env.confirms[0].body,
-    'Leaves ₹4,75,000 for 3 slots — ₹1,58,333 per slot.',
-    'remaining purse ₹5,50,000 - ₹75,000 = ₹4,75,000 over 3 remaining slots');
+    'Leaves ₹4,75,000 for 3 more slots.',
+    'remaining purse ₹5,50,000 - ₹75,000 = ₹4,75,000, with 3 slots to fill');
 });
 
 test('confirm: answering no sends nothing at all', async () => {
@@ -755,12 +760,12 @@ test('confirm: the last slot and an overspend are both described honestly', asyn
 
   // Madurai Kings: 9 of 12, ₹3,20,000 left. A sale leaves 2 slots.
   let els = enterSale(env, 'TM_2', 100000);
-  assert.ok(/Leaves ₹2,20,000 for 2 slots — ₹1,10,000 per slot\./.test(els.preview.textContent),
+  assert.ok(/Leaves ₹2,20,000 for 2 more slots\./.test(els.preview.textContent),
     els.preview.textContent);
 
   // More than the purse: the line still tells the truth rather than hiding it.
   els = enterSale(env, 'TM_2', 400000);
-  assert.ok(/Leaves -₹80,000 for 2 slots/.test(els.preview.textContent),
+  assert.ok(/Leaves -₹80,000 for 2 more slots/.test(els.preview.textContent),
     'an overspend is shown, not silently clamped: ' + els.preview.textContent);
 });
 
@@ -817,7 +822,7 @@ test('warning FAR_ABOVE_RECENT stays silent while there is no history at all', a
   assert.ok(codes.indexOf('SQUAD_AT_RISK') === -1, 'nor a cheapest sale to compare against');
 });
 
-test('warning SQUAD_AT_RISK fires when the leftover per slot drops below the cheapest sale', async () => {
+test('warning SQUAD_AT_RISK fires when what is left cannot cover the remaining slots', async () => {
   const env = await open();
   await callSerial(env, 27);
 
@@ -834,8 +839,14 @@ test('warning SQUAD_AT_RISK fires when the leftover per slot drops below the che
 
   const banner = byClass(first(env.root(), 'auc-sell'), 'auc-warn')
     .filter((b) => b.dataset.code === 'SQUAD_AT_RISK')[0];
-  assert.ok(/₹59,999 for 3 more slots — ₹19,999 each/.test(banner.textContent), banner.textContent);
-  assert.ok(/cheapest sale so far of ₹20,000/.test(banner.textContent), banner.textContent);
+  // The threshold is unchanged; only the wording is. It quotes the cheapest sale
+  // that ACTUALLY happened and the total that implies, instead of a per-slot
+  // average — an average reads as a price per player, and there is no such price.
+  assert.ok(/₹59,999 for 3 more slots\./.test(banner.textContent), banner.textContent);
+  assert.ok(/cheapest sale so far was ₹20,000/.test(banner.textContent), banner.textContent);
+  assert.ok(/would need about ₹60,000/.test(banner.textContent), banner.textContent);
+  assert.ok(banner.textContent.indexOf('each') === -1,
+    'no per-slot figure in the warning: ' + banner.textContent);
 });
 
 test('warning: a warned sale is NEVER blocked — the tick-box lets it through', async () => {
@@ -1293,14 +1304,19 @@ test('keyboard: the shortcuts are printed on the page, not hidden in a modal', a
  * H. Team strip, banners, edge cases
  * ---------------------------------------------------------------------- */
 
-test('team strip: purse remaining, count / max and per-slot are permanently on screen', async () => {
+test('team strip: purse remaining, count / max and slots left are permanently on screen', async () => {
   const env = await open();
   const cells = byClass(env.root(), 'auc-team');
   assert.strictEqual(cells.length, 3);
   assert.strictEqual(first(cells[0], 'auc-team__name').textContent, 'Chennai Warriors');
   assert.strictEqual(first(cells[0], 'auc-team__purse').textContent, '₹5,50,000');
   assert.strictEqual(first(cells[0], 'auc-team__count').textContent, '8 / 12');
-  assert.strictEqual(first(cells[0], 'auc-team__slot').textContent, '₹1,37,500 per slot');
+  // Slots left, not a per-slot price. Every player sells for a different amount,
+  // so an average states a price that does not exist — and the organiser reads
+  // this strip while deciding what to accept.
+  assert.strictEqual(first(cells[0], 'auc-team__slot').textContent, '4 slots left');
+  assert.ok(first(cells[0], 'auc-team__slot').textContent.indexOf('per slot') === -1,
+    'no per-slot price on the strip');
 });
 
 test('team strip: a full squad is marked by a class AND the words "Squad full"', async () => {
@@ -1917,9 +1933,17 @@ const mutations = [
   },
   {
     name: 'M8 swallow a pack download failure -> the NO_IMAGE_FETCHER test must fail',
+    // `false && {...}` evaluates to false, so packError is falsy and the
+    // warnings never render — a real "swallow the error" mutation.
+    //
+    // The previous version spliced in `(0) ? {` and left a conditional with no
+    // else branch, so the mutant did not parse. A SyntaxError makes the mutation
+    // look detected while proving nothing about the assertion: any test at all
+    // would have "caught" it. A mutation has to produce runnable code that is
+    // merely wrong.
     mutate: (s) => s.replace(
       '      state.packError = {\n        code: code,',
-      '      state.packError = (0) ? { code: code,'),
+      '      state.packError = false && {\n        code: code,'),
     check: async (mutate) => {
       const env = await open({ mutate: mutate, handlers: packHandlers() });
       await flush(6);

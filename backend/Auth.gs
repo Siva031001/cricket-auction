@@ -19,9 +19,20 @@ const Auth = {
 
   /** Lockout / failure-counter window, in seconds. */
   LOGIN_FAIL_TTL_SEC: 900,
-
-  /** Minimum password length (DESIGN §16 risk 6). */
-  MIN_PASSWORD_LEN: 10,
+  /**
+   * Shortest password accepted, for admins and organisers alike.
+   *
+   * Set to 4 at the tournament owner's explicit request (they were told the
+   * trade-off). DESIGN.md §16 risk 6 asked for 10, and the reasoning there
+   * still stands: this login is on a public URL and the account behind it holds
+   * 400 people's personal details and their payment screenshots, so 4
+   * characters is guessable. The 15-minute lockout after 5 failed attempts is
+   * now doing most of the work.
+   *
+   * Raise this and nothing else needs to change — every check reads it.
+   * @const {number}
+   */
+  MIN_PASSWORD_LEN: 4,
 
   /**
    * Generic message for every organiser join-link failure — unknown, already
@@ -461,6 +472,50 @@ const Auth = {
    *           user:{user_id:string, display_name:string, role:string, tournament_id:string}}}
    * @throws {Error} UNAUTHORIZED for any bad token, VALIDATION_FAILED for a weak password.
    */
+  /**
+   * Is this join token still usable? Answered WITHOUT consuming it.
+   *
+   * WHY THIS EXISTS. The join page had no way to know, so it always rendered the
+   * "set your password" form. An organiser who had already joined and revisited
+   * their link — a bookmark, the browser back button, or simply the message the
+   * admin sent them — was asked to set a password again, and submitting gave the
+   * deliberately vague "this link is not valid" error. There was no visible
+   * route from there to the sign-in screen, so the reasonable conclusion was
+   * that the account did not work.
+   *
+   * DISCLOSURE. This reports only whether a token is currently redeemable, which
+   * the redeem error already reveals to anyone who submits the form. It returns
+   * no email, no name and no user id, so it cannot be used to enumerate people —
+   * only to test one opaque 64-character token the caller already holds.
+   *
+   * @param {string} token the plain token from the join link
+   * @return {{pending: boolean, joined: boolean}} pending: usable now.
+   *     joined: the token was used at some point, so an account exists and the
+   *     right advice is "sign in" rather than "ask for a new link".
+   */
+  joinStatus(token) {
+    const plain = Util.isBlank(token) ? '' : String(token).trim();
+    if (!plain) return { pending: false, joined: false };
+
+    try {
+      const row = Auth._findUserByJoinTokenHash(Util.sha256Hex(plain));
+      if (!row) {
+        // Either never issued, or superseded by a resend. Nothing to say beyond
+        // "not usable": an account may or may not exist and we must not guess.
+        return { pending: false, joined: false };
+      }
+      return {
+        pending: Auth.isJoinPending(row),
+        joined: !Util.isBlank(row.join_used_at)
+      };
+    } catch (e) {
+      // Never break the page over this: it only decides which screen to show,
+      // and the form still works.
+      console.error('joinStatus failed: ' + (e && e.message ? e.message : e));
+      return { pending: false, joined: false };
+    }
+  },
+
   redeemJoinToken(token, password, ua) {
     const plain = Util.isBlank(token) ? '' : String(token).trim();
     // A missing token gets the same sentence as a wrong one.
