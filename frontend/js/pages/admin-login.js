@@ -19,6 +19,8 @@ const AdminLoginPage = {
 
   /** Where a successful sign-in lands. */
   DASHBOARD_PATH: '/admin/dashboard',
+  ORGANISER_HOME: '/organiser/dashboard',
+  ORGANISER_LOGIN_PATH: '/organiser/login',
 
   /** This screen's own path. */
   LOGIN_PATH: '/admin/login',
@@ -59,7 +61,7 @@ const AdminLoginPage = {
       API.call('auth.me', {})
         .then(function () {
           if (gen !== AdminLoginPage._gen) return;
-          Router.navigate(AdminLoginPage.DASHBOARD_PATH, { replace: true });
+          Router.navigate(AdminLoginPage._destination(me && (me.user || me)), { replace: true });
         })
         .catch(function () {
           // Expired, revoked, or the network is down. Either way the only
@@ -257,7 +259,7 @@ const AdminLoginPage = {
     // is not an ADMIN still goes to /admin/dashboard and the server refuses
     // the actions they are not allowed to run. Authorisation is the server's
     // job; hiding a screen is not authorisation (DESIGN.md §5.6).
-    Router.navigate(AdminLoginPage._destination(), { replace: true });
+    Router.navigate(AdminLoginPage._destination(data && data.user), { replace: true });
   },
 
   /**
@@ -269,7 +271,7 @@ const AdminLoginPage = {
    *
    * @return {string} an app path
    */
-  _destination: function () {
+  _destination: function (user) {
     const wanted = (typeof App !== 'undefined' && App.intendedPath)
       ? String(App.intendedPath)
       : '';
@@ -279,12 +281,34 @@ const AdminLoginPage = {
     // a redirect off this origin, so neither is accepted — the whole point of
     // the check is that this value came from a URL the visitor controls.
     if (!wanted || wanted.charAt(0) !== '/' || wanted.charAt(1) === '/') {
-      return AdminLoginPage.DASHBOARD_PATH;
+      return AdminLoginPage._home(user);
     }
-    // Never bounce straight back to the login screen.
-    if (wanted === AdminLoginPage.LOGIN_PATH) return AdminLoginPage.DASHBOARD_PATH;
+    // Never bounce straight back to a login screen.
+    if (wanted === AdminLoginPage.LOGIN_PATH ||
+        wanted === AdminLoginPage.ORGANISER_LOGIN_PATH) {
+      return AdminLoginPage._home(user);
+    }
 
     return wanted;
+  },
+
+  /**
+   * Where this person belongs, by role.
+   *
+   * This used to send everyone to /admin/dashboard. An organiser landing there
+   * is refused by the server, so an organiser who had just set their password
+   * had nowhere to go and no way to tell what was wrong — they went back to
+   * their join link, which is single-use, and were asked to set a password
+   * again. That loop was the whole of bug report #8.
+   *
+   * @param {Object=} user the `user` object from auth.login / auth.me
+   * @return {string} an app path
+   */
+  _home: function (user) {
+    const role = (user && user.role) ? String(user.role).toUpperCase() : '';
+    return role === 'ORGANISER'
+      ? AdminLoginPage.ORGANISER_HOME
+      : AdminLoginPage.DASHBOARD_PATH;
   },
 
   /**

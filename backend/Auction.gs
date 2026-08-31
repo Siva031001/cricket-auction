@@ -73,6 +73,16 @@ const AUCTION_WARN_PURSE_SHARE = 0.25;
 /** Amount above this multiple of the highest sale so far raises an advisory. @const {number} */
 const AUCTION_WARN_ABOVE_HIGHEST = 5;
 
+/**
+ * Width of the projector photo variant, in pixels.
+ *
+ * The display shows the photo at about half the screen. 1200 covers a 1920-wide
+ * projector at that size without asking Drive for a needlessly large file on
+ * every reveal.
+ * @const {number}
+ */
+const AUCTION_PROJECTOR_PHOTO_WIDTH = 1200;
+
 const Auction = {
 
   // =========================================================================
@@ -266,6 +276,33 @@ const Auction = {
     if (!id) return '';
     const t = teamsById[id];
     return t ? Auction._str(t.team_name) : id;
+  },
+
+  /**
+   * A projector-sized photo URL for a player.
+   *
+   * photo_thumb_url is a 320px variant, sized for a table row. The projector
+   * shows the photo at roughly half the screen, so scaling the thumbnail up is
+   * visibly soft to an audience sitting 15 metres away.
+   *
+   * Built from photo_file_id via Drive.thumbUrl rather than by rewriting the
+   * stored thumb URL, so the width lives in one place and a change to Drive's
+   * URL shape only has to be handled in Drive.gs.
+   *
+   * Returns '' when the player has no photo; the page renders its placeholder.
+   *
+   * @param {!Object} playerRow a Players row
+   * @return {string} an image URL, or ''
+   */
+  _largePhotoUrl(playerRow) {
+    const fileId = Auction._str(playerRow && playerRow.photo_file_id);
+    if (!fileId) return Auction._str(playerRow && playerRow.photo_thumb_url);
+    try {
+      return Drive.thumbUrl(fileId, AUCTION_PROJECTOR_PHOTO_WIDTH);
+    } catch (e) {
+      // Never fail a poll over a photo. A soft picture beats a blank screen.
+      return Auction._str(playerRow && playerRow.photo_thumb_url);
+    }
   },
 
   /**
@@ -656,10 +693,11 @@ const Auction = {
         // says the amber banner belongs. Costs ~20 bytes per team.
         purse_total: Util.toInt(t.purse_total, 0),
         players_count: Util.toInt(t.players_count, 0),
-        max_players: Util.toInt(t.max_players, 0),
-        per_slot_remaining_display: slots > 0
-          ? Util.formatINR(Math.floor(remaining / slots))
-          : 'Squad full'
+        max_players: Util.toInt(t.max_players, 0)
+        // per_slot_remaining deliberately removed. It averaged the remaining
+        // purse across empty slots, which implies every player costs the same.
+        // Prices here are genuinely unpredictable (DESIGN.md §6.5a), so the
+        // number was not just noise on the projector — it was misleading.
       });
     }
     teams.sort((a, b) => a.team_name.localeCompare(b.team_name));
@@ -680,6 +718,11 @@ const Auction = {
           style: Auction._str(p.style),
           age_years: Util.toInt(p.age_years, 0),
           photo_thumb_url: Auction._str(p.photo_thumb_url),
+          // A large variant for the projector. The thumbnail is 320px wide and
+          // the display shows the photo at roughly half a 1024-1920px screen,
+          // so scaling the thumbnail up looks soft to an audience. Built from
+          // the stored file id rather than by string-munging the thumb URL.
+          photo_url: Auction._largePhotoUrl(p),
           auction_status: Auction._str(p.auction_status) || ENUM.AUCTION_STATUS.PENDING,
           team_name: Auction._teamName(teamsById, p.team_id),
           sold_amount_display: soldAmount > 0 ? Util.formatINR(soldAmount) : ''
@@ -691,6 +734,11 @@ const Auction = {
     return {
       v: version,
       status: Auction._str(trn.status),
+      // The audience reads this. Without it display.js fell back to the raw
+      // tournament id ("TRN_ghb1jr2xgs84"), which is meaningless on a screen in
+      // front of a hall. Safe to expose: the name is already public on the
+      // registration page.
+      tournament_name: Auction._str(trn.name),
       current: current,
       teams: teams,
       summary: {

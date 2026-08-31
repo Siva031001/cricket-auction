@@ -244,6 +244,18 @@ const App = {
       tournament: true
     },
     {
+      path: '/organiser/login',
+      global: 'AdminLoginPage',
+      file: 'js/pages/admin-login.js',
+      routeKey: 'admin-login',
+      title: 'Organiser sign in',
+      admin: false
+      // The same form as /admin/login. An organiser who has set their password
+      // needs a URL that makes sense to them; sending them to a path called
+      // "admin" reads like they are in the wrong place. auth.login decides the
+      // role, and AdminLoginPage._home sends them to the right screen.
+    },
+    {
       path: '/organiser/join',
       global: 'OrganiserJoinPage',
       file: 'js/pages/organiser-join.js',

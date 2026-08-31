@@ -660,7 +660,9 @@ const DisplayPage = {
     DisplayPage._setText(el.style, DisplayPage._styleText(p.style));
     DisplayPage._setText(el.age, DisplayPage._ageText(p.age_years));
 
-    DisplayPage._setPhoto(state, p.photo_thumb_url, serial);
+    // photo_url is the 1200px projector variant; photo_thumb_url (320px) is the
+    // fallback for a snapshot from an older backend.
+    DisplayPage._setPhoto(state, p.photo_url || p.photo_thumb_url, serial);
     DisplayPage._setStatus(state, p.auction_status);
     DisplayPage._setResult(state, p);
 
@@ -717,18 +719,30 @@ const DisplayPage = {
       li.appendChild(DisplayPage._el('span', 'display__team-name',
         String(team.team_name || team.team_id || '')));
 
+      // "Remaining" spelled out. A bare rupee figure next to a squad count was
+      // read as money spent by at least one person watching.
+      li.appendChild(DisplayPage._el('span', 'display__team-label', 'Remaining'));
+
       li.appendChild(DisplayPage._el('span', 'display__team-purse',
         DisplayPage._moneyText(team.purse_remaining_display, team.purse_remaining)));
 
       const count = DisplayPage._num(team.players_count);
       const max = DisplayPage._num(team.max_players);
-      li.appendChild(DisplayPage._el('span', 'display__team-count',
-        count + ' / ' + max));
+      const countEl = DisplayPage._el('span', 'display__team-count',
+        count + ' / ' + max);
 
-      if (team.per_slot_remaining_display) {
-        li.appendChild(DisplayPage._el('span', 'display__team-slot',
-          String(team.per_slot_remaining_display) + ' per slot'));
-      }
+      // Mark a full squad so it reads at a glance from the back of the hall.
+      //
+      // Compared as NUMBERS. _num returns a formatted string, and '7' >= '12'
+      // is true in a string comparison because '7' sorts after '1' — which
+      // marked every single-digit team as full.
+      const countN = Number(team.players_count) || 0;
+      const maxN = Number(team.max_players) || 0;
+      if (maxN > 0 && countN >= maxN) countEl.dataset.full = 'true';
+      li.appendChild(countEl);
+
+      // per_slot removed: every player goes for a different amount, so a purse
+      // divided by empty slots implied a price that does not exist.
 
       list.appendChild(li);
     });
@@ -937,6 +951,7 @@ const DisplayPage = {
     const take = function (value) {
       if (!value) return;
       if (typeof value === 'string') { urls.push(value); return; }
+      if (value.photo_url) urls.push(String(value.photo_url));
       if (value.photo_thumb_url) urls.push(String(value.photo_thumb_url));
       else if (value.thumb) urls.push(String(value.thumb));
     };
@@ -977,8 +992,10 @@ const DisplayPage = {
     /* ---- top bar: which tournament, which phase, is the feed alive ---- */
     const top = DisplayPage._el('header', 'display__top');
 
-    const tournament = DisplayPage._el('span', 'display__tournament',
-      state.tournamentId || 'Auction');
+    // NOT the tournament id. "TRN_ghb1jr2xgs84" on a screen in front of a hall
+    // is meaningless; the real name arrives in the snapshot and _paint fills it
+    // in. Until then a neutral word, never the id.
+    const tournament = DisplayPage._el('span', 'display__tournament', 'Auction');
     top.appendChild(tournament);
 
     const phase = DisplayPage._el('span', 'display__phase', '');
@@ -1196,11 +1213,11 @@ const DisplayPage = {
    * which "Waiting for the first player" on its own is not.
    */
   _tournamentName: function (state, snap) {
-    if (!snap) return state.tournamentId || 'Auction';
+    if (!snap) return 'Auction';
     if (snap.tournament_name) return String(snap.tournament_name);
     if (snap.name) return String(snap.name);
     if (snap.tournament && snap.tournament.name) return String(snap.tournament.name);
-    return state.tournamentId || 'Auction';
+    return 'Auction';
   },
 
   /**
