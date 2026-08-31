@@ -302,6 +302,32 @@ test("sting: in 'player' layout it is left up, not auto-cleared", async () => {
  * Ticker and tallies ('full' layout)
  * ---------------------------------------------------------------------- */
 
+test('sting: still fires when the SAME poll also reports AUCTION_CLOSED', async () => {
+  // An organiser can close the auction before the next 2-15s poll runs, so the
+  // single snapshot reporting the tournament's FINAL sale can arrive already
+  // carrying status:AUCTION_CLOSED alongside the SOLD transition. Swallowing
+  // the sting there would make the last sale of the night the one result this
+  // feature never shows.
+  let call = 0;
+  const rows = [clone(PENDING_SNAP), (function () {
+    const s = clone(PENDING_SNAP);
+    s.v = 2; s.status = 'AUCTION_CLOSED';
+    s.current.auction_status = 'SOLD';
+    s.current.sold_amount_display = '₹1,20,000'; s.current.team_name = 'Salem Spartans';
+    return s;
+  }())];
+  const env = boot({ handler: () => ({ data: clone(rows[Math.min(call++, rows.length - 1)]) }) });
+  env.page.render(env.ctx());
+  await flush();
+  env.clock.advance(2000); await flush();
+
+  const sold = oneByClass(env.root(), 'stream__sold');
+  assert.strictEqual(sold.hidden, false, 'the final sale must still be shown');
+  assert.strictEqual(oneByClass(sold, 'stream__sold-amount').textContent, '₹1,20,000');
+  assert.ok(oneByClass(env.root(), 'stream__card').classList.contains('is-idle'),
+    'the ordinary card still goes idle once closed — only the sting is exempt');
+});
+
 test("ticker: renders team purses in 'full' layout, capped by ?teams=", async () => {
   const snap = clone(PENDING_SNAP);
   snap.teams.push({ team_id: 'TM_3', team_name: 'Salem Spartans', purse_remaining_display: '₹1,00,000' });
@@ -374,6 +400,27 @@ mutation(
     env.page.render(env.ctx());
     await flush();
     return oneByClass(env.root(), 'stream__photo').getAttribute('src') === 'https://img.test/27-lg.jpg';
+  }
+);
+
+mutation(
+  "M4 tie the sting to 'not closed' again -> the final-sale test must fail",
+  (src) => src.replace(
+    "if (current && (transition === 'SOLD' || transition === 'UNSOLD')) {",
+    "if (!closed && current && (transition === 'SOLD' || transition === 'UNSOLD')) {"
+  ),
+  async (mutate) => {
+    let call = 0;
+    const rows = [clone(PENDING_SNAP), (function () {
+      const s = clone(PENDING_SNAP);
+      s.v = 2; s.status = 'AUCTION_CLOSED'; s.current.auction_status = 'SOLD';
+      return s;
+    }())];
+    const env = boot({ mutate, handler: () => ({ data: clone(rows[Math.min(call++, rows.length - 1)]) }) });
+    env.page.render(env.ctx());
+    await flush();
+    env.clock.advance(2000); await flush();
+    return oneByClass(env.root(), 'stream__sold').hidden === false;
   }
 );
 

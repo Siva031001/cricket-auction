@@ -119,6 +119,16 @@ The 11 CSV columns are fixed by the requirement and none carries withdrawal, so 
 
 ## Deployment
 
+### 19. Broadcast pages (stream/watch) keep polling if you navigate away without reloading
+A code review found that the router calls a new page's `render()` but nothing calls the OUTGOING page's `_teardown()` — each page only stops its own previous instance, at the top of its own next `render()`. Verified this is not new: `display.js` and `organiser-auction.js` already have the identical property, so it is an existing trait of the whole router (`app.js`), not something `stream.js`/`watch.js` introduced.
+
+**Practical impact is low.** `/stream` and `/watch` are meant to be opened once and left open all night (an OBS Browser Source, a shared viewer tab) — the scenario is someone navigating away in an ordinary tab without closing it. If that happens, the abandoned connection keeps polling at 2-15s until the tab is closed or that page is revisited. `broadcast.js`'s `fatal()` path was found leaking its listener independently of this and has been fixed (§10a-style fix, same day).
+
+Not fixed here: doing so properly means giving the router a generic "call the previous page's teardown before mounting the next one" hook, which is a change to every existing page's contract, not a one-file fix — out of scope for this feature and not something to do silently inside an unrelated PR.
+
+### 20. Full DOM rebuild on every changed poll (stream/watch team ticker and tallies)
+Same, deliberate tradeoff `display.js`'s own `_paintTeams` already documents: "a diff here would be more code to get wrong than it saves" for a handful of nodes that only change on a sale. Not a regression; consistent with the reference implementation.
+
 ### 18. Relative asset paths broke every deep route — RESOLVED
 `index.html` referenced its scripts and stylesheets relatively (`src="js/app.js"`). A browser resolves those against the **document URL**, and this app uses path routing — so at `/cricket-auction/admin/login` it requested `/cricket-auction/admin/js/app.js`, which does not exist. Every asset 404'd and the page rendered blank.
 

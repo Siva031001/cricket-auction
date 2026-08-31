@@ -54,15 +54,17 @@ body[data-route="stream"] .stream__link {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #15803D;
+  /* The same tokens the SOLD/PENDING/UN-SOLD pill uses (app.css), so a retheme
+     of the status palette is not something this dot silently disagrees with. */
+  background: var(--status-sold-bg);
   opacity: 0.55;
 }
 body[data-route="stream"] .stream__link[data-state="reconnecting"] {
-  background: #B45309;
+  background: var(--status-pending-bg);
   animation: stream-pulse 1.2s ease-in-out infinite;
 }
 body[data-route="stream"] .stream__link[data-state="stopped"] {
-  background: #475569;
+  background: var(--status-unsold-bg);
 }
 @keyframes stream-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.9; } }
 
@@ -146,7 +148,7 @@ body[data-route="stream"] .stream__result {
 body[data-route="stream"] .stream__amount {
   font-size: clamp(14px, 1.4vw, 24px);
   font-weight: 800;
-  color: #7ee2a8;
+  color: var(--status-sold-bg);
 }
 body[data-route="stream"] .stream__team {
   font-size: clamp(11px, 1.05vw, 17px);
@@ -163,7 +165,9 @@ body[data-route="stream"] .stream__sold {
   padding: clamp(18px, 2.2vh, 34px) clamp(28px, 4vw, 60px);
   border-radius: clamp(10px, 1vw, 18px);
   text-align: center;
-  background: linear-gradient(160deg, rgba(21, 128, 61, 0.94), rgba(11, 60, 32, 0.94));
+  /* Rooted in --status-sold-bg rather than a bespoke green, so this and every
+     SOLD pill in the app move together if the palette is ever retuned. */
+  background: linear-gradient(160deg, var(--status-sold-bg), rgba(11, 60, 32, 0.94));
   color: #fff;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   opacity: 0;
@@ -174,7 +178,7 @@ body[data-route="stream"] .stream__sold.is-revealed {
   transform: translate(-50%, -50%) scale(1);
 }
 body[data-route="stream"] .stream__sold--unsold {
-  background: linear-gradient(160deg, rgba(71, 85, 105, 0.94), rgba(30, 41, 59, 0.94));
+  background: linear-gradient(160deg, var(--status-unsold-bg), rgba(30, 41, 59, 0.94));
 }
 body[data-route="stream"] .stream__sold-title {
   margin: 0;
@@ -226,7 +230,7 @@ body[data-route="stream"] .stream__ticker-name {
 body[data-route="stream"] .stream__ticker-purse {
   font-size: clamp(11px, 1vw, 16px);
   font-weight: 800;
-  color: #7ee2a8;
+  color: var(--status-sold-bg);
 }
 body[data-route="stream"] .stream__tallies {
   display: none;

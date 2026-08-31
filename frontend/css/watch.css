@@ -45,31 +45,36 @@ body[data-route="watch"] .watch__live {
   font-weight: 800;
   font-size: 0.8rem;
   letter-spacing: 0.04em;
-  background: rgba(21, 128, 61, 0.12);
-  color: #15803D;
+  /* Rooted in the same --status-*-bg tokens the SOLD/PENDING/UN-SOLD pill uses
+     (app.css), so this badge cannot drift from that palette if it is retuned. */
+  background: rgba(21, 128, 61, 0.12);   /* fallback for no color-mix() support */
+  background: color-mix(in srgb, var(--status-sold-bg) 14%, transparent);
+  color: var(--status-sold-bg);
   flex: 0 0 auto;
 }
 body[data-route="watch"] .watch__live-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #15803D;
+  background: var(--status-sold-bg);
 }
 body[data-route="watch"] .watch__live[data-state="reconnecting"] {
   background: rgba(180, 83, 9, 0.12);
-  color: #B45309;
+  background: color-mix(in srgb, var(--status-pending-bg) 14%, transparent);
+  color: var(--status-pending-bg);
 }
 body[data-route="watch"] .watch__live[data-state="reconnecting"] .watch__live-dot {
-  background: #B45309;
+  background: var(--status-pending-bg);
 }
 body[data-route="watch"] .watch__live[data-state="stopped"],
 body[data-route="watch"] .watch__live[data-state="connecting"] {
   background: rgba(71, 85, 105, 0.12);
-  color: #475569;
+  background: color-mix(in srgb, var(--status-unsold-bg) 14%, transparent);
+  color: var(--status-unsold-bg);
 }
 body[data-route="watch"] .watch__live[data-state="stopped"] .watch__live-dot,
 body[data-route="watch"] .watch__live[data-state="connecting"] .watch__live-dot {
-  background: #475569;
+  background: var(--status-unsold-bg);
 }
 
 /* ---- video slot ---- */
@@ -155,7 +160,7 @@ body[data-route="watch"] .watch__result {
   margin-top: 0.4rem;
   flex-wrap: wrap;
 }
-body[data-route="watch"] .watch__amount { font-weight: 800; color: #15803D; font-size: 1.15rem; }
+body[data-route="watch"] .watch__amount { font-weight: 800; color: var(--status-sold-bg); font-size: 1.15rem; }
 body[data-route="watch"] .watch__team { color: var(--ink-muted, #5B6572); }
 
 /* ---- teams grid ---- */
@@ -183,7 +188,7 @@ body[data-route="watch"] .watch__team-name {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-body[data-route="watch"] .watch__team-purse { font-weight: 800; color: #15803D; font-size: 1rem; margin-top: 0.15rem; }
+body[data-route="watch"] .watch__team-purse { font-weight: 800; color: var(--status-sold-bg); font-size: 1rem; margin-top: 0.15rem; }
 body[data-route="watch"] .watch__team-count { color: var(--ink-muted, #5B6572); font-size: 0.85rem; }
 
 /* ---- tallies ---- */

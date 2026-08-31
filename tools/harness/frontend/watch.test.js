@@ -257,11 +257,21 @@ test('video: absent ?video= shows the empty-slot message, no iframe', async () =
   assert.strictEqual(oneByClass(env.root(), 'watch__video-empty').hidden, false);
 });
 
-test('video: the iframe never inherits the referrer, and cannot escape its sandbox to script this page', async () => {
+test('video: the iframe never inherits the referrer', async () => {
+  // NOT a sandbox-isolation test — there is no sandbox attribute, by design
+  // (see watch.js's comment on the line that builds this iframe: YouTube's
+  // and Facebook's own embed code omits one too, because their player needs
+  // allow-scripts/allow-same-origin to function at all). The real security
+  // boundary is the exact-host allow-list checked BEFORE this iframe is ever
+  // created — see the "video: an arbitrary host is REFUSED" and "look-alike
+  // host" tests above, and mutation tests M1-M3 below.
   const env = boot({ liveHandler: () => ({ data: { v: 1, same: true } }) });
   env.page.render(env.ctx({ query: { k: 'K', video: 'https://www.youtube.com/embed/abc' } }));
   const frame = byTag(env.root(), 'IFRAME')[0];
   assert.strictEqual(frame.getAttribute('referrerpolicy'), 'strict-origin-when-cross-origin');
+  assert.strictEqual(frame.getAttribute('sandbox'), null,
+    'no sandbox attribute is expected — asserted explicitly so a future edit ' +
+    'that adds a broken/theatrical one is a deliberate choice, not an accident');
 });
 
 /* ---------------------------------------------------------------------- *

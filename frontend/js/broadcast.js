@@ -174,6 +174,10 @@ const Broadcast = {
         window.clearTimeout(state.timer);
         state.timer = null;
       }
+      detachVisibility();
+    };
+
+    const detachVisibility = function () {
       if (state.onVisibility) {
         document.removeEventListener('visibilitychange', state.onVisibility);
         state.onVisibility = null;
@@ -195,6 +199,12 @@ const Broadcast = {
         window.clearTimeout(state.timer);
         state.timer = null;
       }
+      // Same cleanup as teardown(). Without this, a bad or expired token left
+      // an extra visibilitychange listener registered for the rest of the
+      // tab's life — closing over this whole connection's state — because
+      // fatal() is reached from inside a poll, not from the page's own
+      // _teardown(), and nothing else was ever going to detach it.
+      detachVisibility();
       state.onLink('stopped', 'Not connected');
       state.onFatal(String(message || ''));
     };
@@ -230,8 +240,16 @@ const Broadcast = {
       // seconds and make a still screen look like it is flickering.
       if (snap.same !== true) {
         const current = (snap && snap.current) ? snap.current : null;
+        // serial_no, NOT player_id. auction.displayState's allow-list
+        // (backend/Auction.gs) deliberately never includes player_id — it is
+        // an internal id with no reason to reach a public screen — so a key
+        // built from it collapses to just the status for every player. Two
+        // different players both observed already at SOLD (a tab paused
+        // across two quick sales, or a slow poll catching up) would then
+        // compare equal and the second sale's sting would never fire.
+        // serial_no is a human-facing field the allow-list DOES carry.
         const key = current
-          ? (String(current.player_id || '') + '|' + String(current.auction_status || ''))
+          ? (String(current.serial_no || '') + '|' + String(current.auction_status || ''))
           : '';
         let transition = null;
         if (current && key !== state.shownKey) {
@@ -429,5 +447,28 @@ const Broadcast = {
     if (!node) return;
     const value = (text === null || text === undefined) ? '' : String(text);
     if (node.textContent !== value) node.textContent = value;
+  },
+
+  /**
+   * Put a page's root node on screen. Prefers App.mount so there is one place
+   * that clears #app, but works standalone if app.js is not loaded.
+   *
+   * Shared here rather than duplicated in every page built on this file —
+   * display.js and organiser-auction.js each still carry their own identical
+   * copy of this from before broadcast.js existed; this is the version
+   * stream.js and watch.js call, so there are not yet MORE copies of the
+   * same 8 lines than there already were.
+   * @param {HTMLElement} el
+   * @return {void}
+   */
+  mount: function (el) {
+    if (typeof App !== 'undefined' && App && typeof App.mount === 'function') {
+      App.mount(el);
+      return;
+    }
+    const root = document.getElementById('app');
+    if (!root) return;
+    root.textContent = '';
+    root.appendChild(el);
   }
 };

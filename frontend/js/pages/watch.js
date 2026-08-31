@@ -100,7 +100,7 @@ const WatchPage = {
       el: WatchPage._buildSkeleton()
     };
     WatchPage._state = state;
-    WatchPage._mount(state.el.root);
+    Broadcast.mount(state.el.root);
     WatchPage._paintVideo(state.el, query.video);
 
     if (!tournamentId || !token) {
@@ -320,6 +320,15 @@ const WatchPage = {
     frame.setAttribute('allowfullscreen', 'true');
     frame.setAttribute('frameborder', '0');
     frame.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    // Deliberately NO sandbox attribute. YouTube's and Facebook's own official
+    // embed code omits one too: their player needs allow-scripts and
+    // allow-same-origin to run at all, and a restrictive sandbox would break
+    // autoplay, fullscreen and the share/watch-later popups rather than adding
+    // real protection. The actual security boundary here is upstream of this
+    // line — VIDEO_HOSTS is an EXACT match against a fixed list of first-party
+    // platforms, checked before this iframe is ever created, and https-only.
+    // Sandboxing a frame you have already restricted to a named, trusted host
+    // would be theatre, not defence.
     el.video.appendChild(frame);
   },
 
@@ -472,18 +481,4 @@ const WatchPage = {
     };
   },
 
-  /**
-   * @param {HTMLElement} el
-   * @return {void}
-   */
-  _mount: function (el) {
-    if (typeof App !== 'undefined' && App && typeof App.mount === 'function') {
-      App.mount(el);
-      return;
-    }
-    const root = document.getElementById('app');
-    if (!root) return;
-    root.textContent = '';
-    root.appendChild(el);
-  }
 };

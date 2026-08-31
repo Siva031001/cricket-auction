@@ -136,7 +136,7 @@ const StreamPage = {
     };
     StreamPage._state = state;
     StreamPage.LAYOUTS[layoutKey](state.el);
-    StreamPage._mount(state.el.root);
+    Broadcast.mount(state.el.root);
 
     if (!tournamentId || !token) {
       // No banner, no error text — this is a broadcast surface, not a
@@ -183,22 +183,31 @@ const StreamPage = {
     const el = state.el;
     const current = (snap && snap.current) ? snap.current : null;
     const closed = String(snap && snap.status || '') === 'AUCTION_CLOSED';
+    const transition = snap && snap._transition;
 
-    if (!current || closed) {
-      el.card.classList.add('is-idle');
-      el.sold.hidden = true;
-    } else {
+    // Card visibility: purely "is there a player on the table right now".
+    if (current && !closed) {
       el.card.classList.remove('is-idle');
       StreamPage._paintCard(el, current);
+    } else {
+      el.card.classList.add('is-idle');
+    }
 
+    // Sting visibility: purely "did a sale just happen", independent of the
+    // card. It fires even when THIS poll also reports AUCTION_CLOSED — an
+    // organiser can close the auction before the next poll runs, so the one
+    // snapshot reporting the tournament's FINAL sale can already carry
+    // AUCTION_CLOSED. Tying the sting to "not closed" would make the last
+    // sale of the night the one time this feature shows nothing.
+    if (current && (transition === 'SOLD' || transition === 'UNSOLD')) {
       const status = String(current.auction_status || '').toUpperCase();
-      if (snap._transition === 'SOLD' || snap._transition === 'UNSOLD') {
-        StreamPage._paintSting(state, current, status);
-      } else if (status !== 'SOLD' && status !== 'UNSOLD') {
-        // Player changed without a fresh sale (e.g. returned to the pool) —
-        // clear a sting left over from a previous player.
-        el.sold.hidden = true;
-      }
+      StreamPage._paintSting(state, current, status);
+    } else if (!closed) {
+      // Only cleared on the ordinary path. Once closed, a sting already on
+      // screen stays exactly as it was — closing is not itself a reason to
+      // hide the last result shown.
+      const status = current ? String(current.auction_status || '').toUpperCase() : '';
+      if (status !== 'SOLD' && status !== 'UNSOLD') el.sold.hidden = true;
     }
 
     StreamPage._paintTicker(state, snap.teams);
@@ -455,18 +464,4 @@ const StreamPage = {
     };
   },
 
-  /**
-   * @param {HTMLElement} el
-   * @return {void}
-   */
-  _mount: function (el) {
-    if (typeof App !== 'undefined' && App && typeof App.mount === 'function') {
-      App.mount(el);
-      return;
-    }
-    const root = document.getElementById('app');
-    if (!root) return;
-    root.textContent = '';
-    root.appendChild(el);
-  }
 };

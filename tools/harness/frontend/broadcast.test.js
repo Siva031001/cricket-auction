@@ -93,7 +93,7 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 
 const SNAP = {
   v: 5, same: false, status: 'AUCTION_LIVE', tournament_name: 'Test Cup',
-  current: { player_id: 'PLY_1', serial_no: 9, name: 'Player 9', auction_status: 'PENDING' },
+  current: { serial_no: 9, name: 'Player 9', auction_status: 'PENDING' },  // no player_id — see broadcast.js's own comment on why
   teams: [], summary: { sold: 1, unsold: 0, not_called: 0 }
 };
 
@@ -293,7 +293,7 @@ test('_transition: never fires on the very first snapshot, even if already SOLD'
   // already marked SOLD from a sale that happened minutes earlier. That must
   // not play a fresh "just sold" sting purely because it is new to THIS
   // connection — a transition is something that happens WHILE watching.
-  const env = boot({ handler: () => ({ data: { v: 1, current: { player_id: 'PLY_1', auction_status: 'SOLD' } } }) });
+  const env = boot({ handler: () => ({ data: { v: 1, current: { serial_no: 1, auction_status: 'SOLD' } } }) });
   const transitions = [];
   env.Broadcast.connect({
     tournamentId: 'TRN_x', token: 'K1',
@@ -306,8 +306,8 @@ test('_transition: never fires on the very first snapshot, even if already SOLD'
 test('_transition: fires SOLD exactly once when a player is sold', async () => {
   let call = 0;
   const rows = [
-    { v: 1, current: { player_id: 'PLY_1', auction_status: 'PENDING' } },
-    { v: 2, current: { player_id: 'PLY_1', auction_status: 'SOLD' } },
+    { v: 1, current: { serial_no: 1, auction_status: 'PENDING' } },
+    { v: 2, current: { serial_no: 1, auction_status: 'SOLD' } },
     { v: 2, same: true }
   ];
   const env = boot({ handler: () => ({ data: clone(rows[Math.min(call++, rows.length - 1)]) }) });
@@ -324,12 +324,44 @@ test('_transition: fires SOLD exactly once when a player is sold', async () => {
     'the first snapshot (PENDING) has no transition; SOLD fires once, the repeat (same:true) never arrives at all');
 });
 
+test('_transition: TWO DIFFERENT PLAYERS both landing on SOLD in consecutive polls each get their own sting', async () => {
+  // The exact bug a review caught: the edge-detector key used to be built
+  // from current.player_id, a field auction.displayState's public allow-list
+  // (backend/Auction.gs) never actually includes. In production the key
+  // therefore collapsed to just the status, so two DIFFERENT players both
+  // observed already at SOLD on consecutive polls — plausible whenever a poll
+  // catches up after more than one sale, e.g. following a paused/hidden tab —
+  // looked identical ('|SOLD' === '|SOLD') and the second player's sting
+  // never fired. serial_no IS in the allow-list, which is what the key must
+  // use instead.
+  let call = 0;
+  const rows = [
+    { v: 1, current: { serial_no: 1, auction_status: 'PENDING' } },
+    { v: 2, current: { serial_no: 1, auction_status: 'SOLD' } },   // player #1 sold
+    { v: 3, current: { serial_no: 2, auction_status: 'SOLD' } }    // player #2 ALSO sold,
+    // arriving already-decided because the poll skipped straight past #2's
+    // PENDING moment — exactly what a paused tab or a slow catch-up produces.
+  ];
+  const env = boot({ handler: () => ({ data: clone(rows[Math.min(call++, rows.length - 1)]) }) });
+  const transitions = [];
+  env.Broadcast.connect({
+    tournamentId: 'TRN_x', token: 'K1',
+    onSnapshot: (s) => transitions.push(s._transition)
+  });
+  await flush();
+  env.clock.advance(2000); await flush();
+  env.clock.advance(2000); await flush();
+
+  assert.deepStrictEqual(transitions, [null, 'SOLD', 'SOLD'],
+    'each player must get their own SOLD transition — got ' + JSON.stringify(transitions));
+});
+
 test('_transition: a NEW player arriving already SOLD after watching a while is not re-flagged', async () => {
   let call = 0;
   const rows = [
-    { v: 1, current: { player_id: 'PLY_1', auction_status: 'PENDING' } },
-    { v: 2, current: { player_id: 'PLY_1', auction_status: 'SOLD' } },
-    { v: 3, current: { player_id: 'PLY_2', auction_status: 'PENDING' } }
+    { v: 1, current: { serial_no: 1, auction_status: 'PENDING' } },
+    { v: 2, current: { serial_no: 1, auction_status: 'SOLD' } },
+    { v: 3, current: { serial_no: 2, auction_status: 'PENDING' } }
   ];
   const env = boot({ handler: () => ({ data: clone(rows[Math.min(call++, rows.length - 1)]) }) });
   const transitions = [];
@@ -449,7 +481,7 @@ mutation(
   async (mutate) => {
     const env = boot({
       mutate,
-      handler: () => ({ data: { v: 1, current: { player_id: 'PLY_1', auction_status: 'SOLD' } } })
+      handler: () => ({ data: { v: 1, current: { serial_no: 1, auction_status: 'SOLD' } } })
     });
     const transitions = [];
     env.Broadcast.connect({
@@ -458,6 +490,34 @@ mutation(
     });
     await flush();
     return transitions[0] === null;
+  }
+);
+
+mutation(
+  'M6 go back to keying the transition on player_id -> the two-different-players test must fail',
+  (src) => src.replace(
+    "String(current.serial_no || '') + '|' + String(current.auction_status || '')",
+    "String(current.player_id || '') + '|' + String(current.auction_status || '')"
+  ),
+  async (mutate) => {
+    let call = 0;
+    const rows = [
+      { v: 1, current: { serial_no: 1, auction_status: 'PENDING' } },
+      { v: 2, current: { serial_no: 1, auction_status: 'SOLD' } },
+      { v: 3, current: { serial_no: 2, auction_status: 'SOLD' } }
+    ];
+    const env = boot({ mutate, handler: () => ({ data: clone(rows[Math.min(call++, rows.length - 1)]) }) });
+    const transitions = [];
+    env.Broadcast.connect({
+      tournamentId: 'TRN_x', token: 'K1',
+      onSnapshot: (s) => transitions.push(s._transition)
+    });
+    await flush();
+    env.clock.advance(2000); await flush();
+    env.clock.advance(2000); await flush();
+    // With player_id (always undefined in these fixtures, matching the real
+    // allow-list), both SOLD polls key identically and the second is missed.
+    return JSON.stringify(transitions) === JSON.stringify([null, 'SOLD', 'SOLD']);
   }
 );
 
