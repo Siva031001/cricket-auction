@@ -716,3 +716,11 @@ body[data-route="admin-organisers"] .org-badge--done {
     max-width: none;
   }
 }
+
+/* Feedback item 13: the auction console had no way in but the URL bar. This is
+   the organiser's primary action on the day, so it is given real presence in
+   the header rather than sitting among the secondary controls. */
+body[data-route="organiser-dashboard"] .org__to-auction {
+  font-weight: 800;
+  white-space: nowrap;
+}

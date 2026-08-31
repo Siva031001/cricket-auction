@@ -60,6 +60,9 @@ const OrganiserDashboardPage = {
   /** @const {string} */
   DASHBOARD_PATH: '/organiser/dashboard',
 
+  /** The live auction console. @const {string} */
+  AUCTION_PATH: '/organiser/auction',
+
   /** Written by OrganiserJoinPage. Same key names on purpose. @const {string} */
   TOURNAMENT_KEY: 'ca.organiser.tournament',
 
@@ -373,6 +376,17 @@ const OrganiserDashboardPage = {
 
     const actions = document.createElement('div');
     actions.className = 'org__actions';
+
+    // THE WAY IN TO THE AUCTION. Until now /organiser/auction was reachable only
+    // by typing the URL, which is not something to ask of someone standing on a
+    // stage about to start (feedback item 13). This is the organiser's primary
+    // action on the day, so it is a button and not a link buried in text.
+    const toAuction = document.createElement('a');
+    toAuction.className = 'btn btn--primary org__to-auction';
+    toAuction.textContent = 'Open the auction console';
+    toAuction.href = Router.href(OrganiserDashboardPage.AUCTION_PATH);
+    actions.appendChild(toAuction);
+
     head.appendChild(actions);
 
     main.appendChild(head);

@@ -11,7 +11,7 @@
  * Contracts honoured:
  *   CONTRACTS-PHASE3 §1   auth.organiserJoin {token, password}
  *                         -> {token, expiresAt, user:{...}}
- *                         password minimum 10 characters, as Auth.createUser
+ *                         password minimum Auth.MIN_PASSWORD_LEN, as Auth.createUser
  *                         used / expired / unknown token -> UNAUTHORIZED with
  *                         ONE generic message for all three
  *   CONTRACTS-PHASE3 §5.1 read ?k=, ask twice, store the session, go to the
@@ -76,7 +76,15 @@ const OrganiserJoinPage = {
    * rule out loud; the server is the authority.
    * @const {number}
    */
-  MIN_PASSWORD: 10,
+  /**
+   * Must match Auth.MIN_PASSWORD_LEN on the server.
+   *
+   * The server is authoritative; this only exists so the rule is stated before
+   * someone types rather than after they fail. If the two ever disagree the
+   * server wins and the message it returns is shown unchanged.
+   * @const {number}
+   */
+  MIN_PASSWORD: 4,
 
   /** How long a join link lives (CONTRACTS-PHASE3 §1 rule 4). @const {number} */
   EXPIRY_HOURS: 72,

@@ -444,3 +444,22 @@ body[data-route="admin-login"] .panel.admin-login {
   .admin-table { min-width: 0; }
   .t-status { border-color: #000000; color: #000000; background: transparent; }
 }
+
+/* ======================================================================
+   REVISION — feedback item 7: no warning glyph on the sign-in screen
+   ======================================================================
+
+   The ⚠ in front of an error is app.css's house style, and colour is never the
+   only signal there (DESIGN.md §8). But on a sign-in form the only errors are
+   "wrong password" and "cannot reach the server", and a caution triangle makes
+   an ordinary typo look like something has broken.
+
+   The glyph is hidden; the .visually-hidden word "Error:" that UI.banner emits
+   beside it is NOT touched, so a screen reader still announces it and the
+   signal does not depend on colour alone. This is a presentation change on one
+   route, not a removal of the accessible signal.
+   ====================================================================== */
+
+body[data-route="admin-login"] .banner__mark {
+  display: none;
+}

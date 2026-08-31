@@ -33,6 +33,17 @@ const CONFIG = {
   POLL_INTERVAL_MS: 2000,
 
   /**
+   * How long to wait for the API before showing an error, in milliseconds.
+   *
+   * fetch() has no timeout of its own, so without this a half-dead network
+   * leaves every screen on a spinner that never resolves. Raise it if a venue
+   * connection is slow but working; lower it if you would rather see an error
+   * sooner during the auction.
+   * @const {number}
+   */
+  REQUEST_TIMEOUT_MS: 20000,
+
+  /**
    * GitHub Pages project sites are served from a sub-path, not the domain
    * root:  https://<user>.github.io/cricket-auction/
    * So every real URL is BASE_PATH + the app route. The router strips this

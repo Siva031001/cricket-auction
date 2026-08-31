@@ -307,9 +307,15 @@ t('list is scoped to one tournament and only returns organisers', () => {
 });
 
 // ------------------------------------------------------------- redeem
-t('the password rule (>= 10 chars) is enforced and the link survives a short one', () => {
-  const e = throwsCode(() => G.Auth.redeemJoinToken(plainToken, 'short', 'ua'), 'VALIDATION_FAILED');
-  ok(/at least 10 characters/.test(e.message), 'message names the rule: ' + e.message);
+t('the password minimum is enforced and the link survives a short one', () => {
+  // Derived from the constant, not a hardcoded string. The minimum is a
+  // tournament-owner decision that has already changed once (10 -> 4), and a
+  // literal 'short' silently BECAME VALID — so this test stopped rejecting,
+  // burned the single-use token, and cascaded into eight unrelated failures.
+  const tooShort = 'a'.repeat(Math.max(0, G.Auth.MIN_PASSWORD_LEN - 1));
+  const e = throwsCode(() => G.Auth.redeemJoinToken(plainToken, tooShort, 'ua'), 'VALIDATION_FAILED');
+  ok(new RegExp('at least ' + G.Auth.MIN_PASSWORD_LEN + ' characters').test(e.message),
+    'message names the rule: ' + e.message);
   eq(userCell(created.user_id, 'join_token_hash'), G.Util.sha256Hex(plainToken), 'token must NOT be burned: ');
   eq(userCell(created.user_id, 'join_used_at'), '');
 });

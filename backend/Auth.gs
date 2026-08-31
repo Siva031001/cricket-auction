@@ -19,9 +19,20 @@ const Auth = {
 
   /** Lockout / failure-counter window, in seconds. */
   LOGIN_FAIL_TTL_SEC: 900,
-
-  /** Minimum password length (DESIGN §16 risk 6). */
-  MIN_PASSWORD_LEN: 10,
+  /**
+   * Shortest password accepted, for admins and organisers alike.
+   *
+   * Set to 4 at the tournament owner's explicit request (they were told the
+   * trade-off). DESIGN.md §16 risk 6 asked for 10, and the reasoning there
+   * still stands: this login is on a public URL and the account behind it holds
+   * 400 people's personal details and their payment screenshots, so 4
+   * characters is guessable. The 15-minute lockout after 5 failed attempts is
+   * now doing most of the work.
+   *
+   * Raise this and nothing else needs to change — every check reads it.
+   * @const {number}
+   */
+  MIN_PASSWORD_LEN: 4,
 
   /**
    * Generic message for every organiser join-link failure — unknown, already

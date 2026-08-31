@@ -412,7 +412,7 @@ async function testJoinHappyPath() {
   eq(document.body.dataset.route, 'organiser-join', 'body data-route is organiser-join');
 
   // The rule is on screen BEFORE anything is typed.
-  has(App.root.textContent, 'At least 10 characters',
+  has(App.root.textContent, 'At least ' + OrganiserJoinPage.MIN_PASSWORD + ' characters',
     'the password rule is printed before the boxes, not after a failure');
 
   const p1 = inputNamed(App.root, 'password');
@@ -469,12 +469,19 @@ async function testJoinMismatchBlockedLocally() {
   reset();
   OrganiserJoinPage.render(joinCtx('JOIN_TOKEN_ABC'));
   await flush();
-  inputNamed(App.root, 'password').value = 'short';
-  inputNamed(App.root, 'password2').value = 'short';
+  // Derived from the page's own constant. A hardcoded 'short' silently became
+  // VALID when the minimum dropped from 10 to 4, so this stopped testing
+  // anything — it asserted a request was not sent while the page happily sent
+  // one. The minimum is an owner decision and will move again.
+  const tooShort = 'a'.repeat(Math.max(1, OrganiserJoinPage.MIN_PASSWORD - 1));
+  inputNamed(App.root, 'password').value = tooShort;
+  inputNamed(App.root, 'password2').value = tooShort;
   findButton(App.root, 'Set password and continue').click();
   await flush();
-  eq(callsTo('auth.organiserJoin').length, 0, 'a 5-character password is not sent either');
-  has(App.root.textContent, 'at least 10 characters. This one has 5.',
+  eq(callsTo('auth.organiserJoin').length, 0,
+    'a password one character under the minimum is not sent either');
+  has(App.root.textContent,
+    'at least ' + OrganiserJoinPage.MIN_PASSWORD + ' characters. This one has ' + tooShort.length + '.',
     'the message names how short it actually is');
 }
 
