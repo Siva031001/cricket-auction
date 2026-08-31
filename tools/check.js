@@ -225,6 +225,9 @@ function checkRoutes(ctx) {
     // The organiser has no account yet, so there is no session token to send;
     // the one-time join token in the payload is the credential (PHASE3 §1).
     'auth.organiserJoin',
+    // Reports only whether a join token the caller already holds is still
+    // usable. No identity, and strictly less than the redeem error reveals.
+    'auth.joinStatus',
     'tournament.getPublic', 'player.register', 'player.checkMobile',
     // The projector runs unattended on a venue laptop with no operator signed
     // in. Its credential is the tournament's display_token in the query string

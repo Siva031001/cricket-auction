@@ -117,7 +117,77 @@ const OrganiserJoinPage = {
       return;
     }
 
-    OrganiserJoinPage._renderForm(token);
+    // Two questions BEFORE showing a password form, because this page used to
+    // ask every visitor to set a password regardless of whether they already
+    // had (bug report 8): an organiser who revisited their link — a bookmark,
+    // the back button, or the message the admin sent them — was asked again,
+    // and submitting gave a deliberately vague failure with no visible way to
+    // reach the sign-in screen.
+    //
+    // 1. Already signed in? Then there is nothing to do here.
+    if (API.getToken()) {
+      API.call('auth.me', {})
+        .then(function (me) {
+          if (gen !== OrganiserJoinPage._gen) return;
+          OrganiserJoinPage._goHome(me);
+        })
+        .catch(function () {
+          // The stored token is dead. Fall through to question 2.
+          if (gen !== OrganiserJoinPage._gen) return;
+          API.clearToken();
+          OrganiserJoinPage._askTokenThenRender(token, gen);
+        });
+      return;
+    }
+
+    // 2. Is this link still usable?
+    OrganiserJoinPage._askTokenThenRender(token, gen);
+  },
+
+  /**
+   * Send an already-signed-in visitor to the screen they belong on.
+   * @param {Object} me the auth.me response
+   * @return {void}
+   */
+  _goHome: function (me) {
+    const user = (me && me.user) ? me.user : me;
+    const role = (user && user.role) ? String(user.role).toUpperCase() : '';
+    Router.navigate(
+      role === 'ADMIN' ? '/admin/dashboard' : OrganiserJoinPage.DASHBOARD_PATH,
+      { replace: true }
+    );
+  },
+
+  /**
+   * Ask the server whether the link is still redeemable, then render the screen
+   * that actually applies.
+   *
+   * A failure here is not fatal: the form still works, and the redeem call is
+   * the authoritative check either way. So an error falls back to the form
+   * rather than blocking someone who has a perfectly good link.
+   *
+   * @param {string} token the plain join token from ?k=
+   * @param {number} gen the render generation, to drop a stale reply
+   * @return {void}
+   */
+  _askTokenThenRender: function (token, gen) {
+    OrganiserJoinPage._renderChecking();
+
+    API.call('auth.joinStatus', { token: token })
+      .then(function (status) {
+        if (gen !== OrganiserJoinPage._gen) return;
+        if (status && status.pending === false && status.joined === true) {
+          // The important case: this person HAS an account. Telling them to ask
+          // for a new link would be wrong — they need to sign in.
+          OrganiserJoinPage._renderAlreadyJoined();
+          return;
+        }
+        OrganiserJoinPage._renderForm(token);
+      })
+      .catch(function () {
+        if (gen !== OrganiserJoinPage._gen) return;
+        OrganiserJoinPage._renderForm(token);
+      });
   },
 
   /* ================================================================== *
@@ -266,6 +336,56 @@ const OrganiserJoinPage = {
       'including everything after "?k=".');
 
     shell.body.appendChild(OrganiserJoinPage._nextSteps());
+    OrganiserJoinPage._mount(shell.main);
+  },
+
+  /**
+   * A brief "checking this link" screen, so the page is never blank while the
+   * status call is in flight.
+   * @return {void}
+   */
+  _renderChecking: function () {
+    const shell = OrganiserJoinPage._shell('Checking your link', '');
+    shell.body.appendChild(UI.spinner('One moment…'));
+    OrganiserJoinPage._mount(shell.main);
+  },
+
+  /**
+   * The link has already been used, so an account exists.
+   *
+   * THIS SCREEN IS THE FIX FOR BUG 8. Previously this visitor got the password
+   * form, set a password, and was told the link was invalid — with no route to
+   * the sign-in page. The account was fine the whole time; there was simply
+   * nothing on screen that said so, or where to go.
+   *
+   * @return {void}
+   */
+  _renderAlreadyJoined: function () {
+    const shell = OrganiserJoinPage._shell(
+      'Your account is already set up',
+      'This link has been used, which means your password is already saved. ' +
+      'You do not need to set it again.'
+    );
+
+    const p = document.createElement('p');
+    p.className = 'panel__note';
+    p.textContent = 'Sign in with the email address your tournament admin ' +
+      'registered, and the password you chose when you first opened this link.';
+    shell.body.appendChild(p);
+
+    const signIn = document.createElement('a');
+    signIn.className = 'btn btn--primary';
+    signIn.textContent = 'Go to sign in';
+    signIn.href = Router.href(OrganiserJoinPage.LOGIN_PATH);
+    shell.body.appendChild(signIn);
+
+    const forgot = document.createElement('p');
+    forgot.className = 'panel__note';
+    forgot.textContent = 'Forgotten the password? Ask your tournament admin to ' +
+      'send a new invitation link — that lets you set a new one. The old link ' +
+      'stops working as soon as a new one is sent.';
+    shell.body.appendChild(forgot);
+
     OrganiserJoinPage._mount(shell.main);
   },
 

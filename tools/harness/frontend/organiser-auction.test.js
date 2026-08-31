@@ -822,7 +822,7 @@ test('warning FAR_ABOVE_RECENT stays silent while there is no history at all', a
   assert.ok(codes.indexOf('SQUAD_AT_RISK') === -1, 'nor a cheapest sale to compare against');
 });
 
-test('warning SQUAD_AT_RISK fires when the leftover per slot drops below the cheapest sale', async () => {
+test('warning SQUAD_AT_RISK fires when what is left cannot cover the remaining slots', async () => {
   const env = await open();
   await callSerial(env, 27);
 
@@ -839,8 +839,14 @@ test('warning SQUAD_AT_RISK fires when the leftover per slot drops below the che
 
   const banner = byClass(first(env.root(), 'auc-sell'), 'auc-warn')
     .filter((b) => b.dataset.code === 'SQUAD_AT_RISK')[0];
-  assert.ok(/₹59,999 for 3 more slots — ₹19,999 each/.test(banner.textContent), banner.textContent);
-  assert.ok(/cheapest sale so far of ₹20,000/.test(banner.textContent), banner.textContent);
+  // The threshold is unchanged; only the wording is. It quotes the cheapest sale
+  // that ACTUALLY happened and the total that implies, instead of a per-slot
+  // average — an average reads as a price per player, and there is no such price.
+  assert.ok(/₹59,999 for 3 more slots\./.test(banner.textContent), banner.textContent);
+  assert.ok(/cheapest sale so far was ₹20,000/.test(banner.textContent), banner.textContent);
+  assert.ok(/would need about ₹60,000/.test(banner.textContent), banner.textContent);
+  assert.ok(banner.textContent.indexOf('each') === -1,
+    'no per-slot figure in the warning: ' + banner.textContent);
 });
 
 test('warning: a warned sale is NEVER blocked — the tick-box lets it through', async () => {
@@ -1298,14 +1304,19 @@ test('keyboard: the shortcuts are printed on the page, not hidden in a modal', a
  * H. Team strip, banners, edge cases
  * ---------------------------------------------------------------------- */
 
-test('team strip: purse remaining, count / max and per-slot are permanently on screen', async () => {
+test('team strip: purse remaining, count / max and slots left are permanently on screen', async () => {
   const env = await open();
   const cells = byClass(env.root(), 'auc-team');
   assert.strictEqual(cells.length, 3);
   assert.strictEqual(first(cells[0], 'auc-team__name').textContent, 'Chennai Warriors');
   assert.strictEqual(first(cells[0], 'auc-team__purse').textContent, '₹5,50,000');
   assert.strictEqual(first(cells[0], 'auc-team__count').textContent, '8 / 12');
-  assert.strictEqual(first(cells[0], 'auc-team__slot').textContent, '₹1,37,500 per slot');
+  // Slots left, not a per-slot price. Every player sells for a different amount,
+  // so an average states a price that does not exist — and the organiser reads
+  // this strip while deciding what to accept.
+  assert.strictEqual(first(cells[0], 'auc-team__slot').textContent, '4 slots left');
+  assert.ok(first(cells[0], 'auc-team__slot').textContent.indexOf('per slot') === -1,
+    'no per-slot price on the strip');
 });
 
 test('team strip: a full squad is marked by a class AND the words "Squad full"', async () => {

@@ -35,7 +35,7 @@
  *      six. slots_remaining and purse_remaining are the two true figures
  *      (CONTRACTS-PHASE3 §2), so it gets the largest type in the row and a
  *      word — "Low" / "Very low" — whenever it falls well under what the team
- *      could originally afford per slot.
+ *      could originally afford, without stating a per-player price.
  *
  *   3. NEVER HIDE A CONTROL TO PREVENT AN ERROR.
  *      Lowering a squad size below the players already bought is refused with

@@ -2517,15 +2517,19 @@ const OrganiserAuctionPage = {
     const slotsAfter = (Number(team.max_players) || 0) - (Number(team.players_count) || 0) - 1;
     const purseAfter = remaining - amount;
     if (lowest > 0 && slotsAfter > 0) {
+      // Compared against the cheapest sale that ACTUALLY happened, and worded
+      // the same way the server words it (Auction._warnings). No per-slot
+      // average is shown: it reads as a price per player, and there isn't one.
       const perSlot = Math.floor(purseAfter / slotsAfter);
       if (perSlot < lowest) {
         out.push({
           code: 'SQUAD_AT_RISK',
           message: 'This leaves ' + name + ' ' + OrganiserAuctionPage._money(purseAfter) +
             ' for ' + slotsAfter + ' more ' + (slotsAfter === 1 ? 'slot' : 'slots') +
-            ' — ' + OrganiserAuctionPage._money(perSlot) +
-            ' each, below the cheapest sale so far of ' +
-            OrganiserAuctionPage._money(lowest) + '.'
+            '. The cheapest sale so far was ' + OrganiserAuctionPage._money(lowest) +
+            ', so filling ' + (slotsAfter === 1 ? 'it' : 'them') +
+            ' at that price would need about ' +
+            OrganiserAuctionPage._money(lowest * slotsAfter) + '.'
         });
       }
     }
@@ -3481,11 +3485,14 @@ const OrganiserAuctionPage = {
         OrganiserAuctionPage._num(t.max_players);
       li.appendChild(count);
 
+      // Slots left, NOT remaining-purse-divided-by-slots. Every player sells
+      // for a different amount, so that average stated a price that does not
+      // exist — and the organiser is reading this while deciding what to accept.
       const slot = document.createElement('span');
       slot.className = 'auc-team__slot';
-      slot.textContent = String(t.per_slot_remaining_display ||
-        (slots > 0 ? OrganiserAuctionPage._money(Math.floor((Number(t.purse_remaining) || 0) / slots))
-          : 'Squad full')) + (slots > 0 ? ' per slot' : '');
+      slot.textContent = slots > 0
+        ? (String(slots) + (slots === 1 ? ' slot left' : ' slots left'))
+        : 'Squad full';
       li.appendChild(slot);
 
       list.appendChild(li);
