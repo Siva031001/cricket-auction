@@ -947,9 +947,12 @@ body[data-route="display"] .display__teams-caption {
 
 body[data-route="display"] .display__teams {
   display: grid;
-  /* SIX ROWS, THEN A NEW COLUMN. This is the whole answer to "it may have 12
-     teams": 6 -> one column, 12 -> two, 18 -> three. No media query and no
-     count-dependent rule to keep in sync. */
+  /* grid-template-rows is set by _paintTeams from the team count: columns are
+     bounded at ten rows each, so 6 teams give one column, 12 give two of six,
+     20 give two of ten, 30 give three of ten. Height is the cheaper axis — the
+     block is bottom-aligned and the stage above it needs the room.
+
+     The repeat(6) here is only the value used before the first paint. */
   grid-auto-flow: column;
   grid-template-rows: repeat(6, auto);
   grid-template-columns: none;
@@ -957,6 +960,67 @@ body[data-route="display"] .display__teams {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* ---- density: rows give up size as the count grows -------------------- */
+
+/* 11-18 teams. */
+body[data-route="display"] .display__teams-box[data-density="compact"] {
+  max-width: 72vw;
+}
+body[data-route="display"] [data-density="compact"] .display__team-cell {
+  padding: 1px 0;
+  column-gap: clamp(5px, 0.6vw, 10px);
+}
+body[data-route="display"] [data-density="compact"] .display__team-name {
+  font-size: clamp(10px, 0.8vw, 15px);
+  max-width: 13ch;
+}
+body[data-route="display"] [data-density="compact"] .display__team-purse {
+  font-size: clamp(10px, 0.85vw, 16px);
+}
+body[data-route="display"] [data-density="compact"] .display__team-count {
+  font-size: clamp(9px, 0.7vw, 13px);
+}
+
+/* 19+ teams. Tighter still, and the block may take most of the width — at this
+   count the standings ARE the bottom strip, so the tallies wrap under them
+   rather than fighting for the same row. */
+body[data-route="display"] .display__teams-box[data-density="tight"] {
+  max-width: 100%;
+  justify-self: stretch;
+}
+body[data-route="display"] [data-density="tight"] .display__team-cell {
+  padding: 0;
+  column-gap: clamp(4px, 0.5vw, 8px);
+}
+body[data-route="display"] [data-density="tight"] .display__team-name {
+  font-size: clamp(9px, 0.7vw, 13px);
+  max-width: 11ch;
+}
+body[data-route="display"] [data-density="tight"] .display__team-purse {
+  font-size: clamp(9px, 0.75vw, 14px);
+}
+body[data-route="display"] [data-density="tight"] .display__team-count {
+  font-size: clamp(8px, 0.62vw, 12px);
+  min-width: 3.5ch;
+}
+body[data-route="display"] .display__teams-box[data-density="tight"] .display__teams {
+  gap: 0 clamp(8px, 1vw, 18px);
+}
+
+/* At three or more columns the strip needs the whole width; the tallies move
+   to their own row underneath. */
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-columns="3"]),
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-density="tight"]) {
+  grid-template-columns: minmax(0, 1fr);
+  max-height: 42vh;
+}
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-columns="3"]) .display__summary,
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-density="tight"]) .display__summary,
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-columns="3"]) .display__teams-box,
+body[data-route="display"] .display__bottom:has(.display__teams-box[data-density="tight"]) .display__teams-box {
+  grid-column: 1;
 }
 
 /* One team, one line: name | purse | players. */

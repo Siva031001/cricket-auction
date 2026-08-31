@@ -580,6 +580,55 @@ test('auction closed: the final summary replaces the player card', async () => {
  * 9. Standings, summary, pre-warming, keyboard
  * ---------------------------------------------------------------------- */
 
+test('standings scale from 6 teams to 20 without a fixed row count', async () => {
+  // The row/column shape used to be hardcoded at "six rows, then a new column".
+  // Fine at 6 and 12; at 20 that is four columns, which will not fit across a
+  // 1024px projector beside the tallies. Columns are now bounded at ten rows.
+  const shapes = [
+    { teams: 6,  rows: 6,  cols: 1, density: 'normal' },
+    { teams: 12, rows: 6,  cols: 2, density: 'compact' },
+    { teams: 20, rows: 10, cols: 2, density: 'tight' },
+    { teams: 30, rows: 10, cols: 3, density: 'tight' }
+  ];
+
+  for (const want of shapes) {
+    const snap = clone(SNAP_V2);
+    snap.teams = [];
+    for (let i = 0; i < want.teams; i += 1) {
+      snap.teams.push({
+        team_id: 'TM_' + i,
+        team_name: 'Team Number ' + (i + 1),
+        purse_remaining: 100000 + i,
+        purse_remaining_display: '₹1,00,00' + (i % 10),
+        players_count: i % 12,
+        max_players: 12
+      });
+    }
+
+    const env = boot({ handler: () => ({ data: snap }) });
+    env.page.render(env.ctx());
+    await flush();
+
+    const cells = byClass(env.root(), 'display__team-cell');
+    assert.strictEqual(cells.length, want.teams,
+      want.teams + ' teams all render');
+
+    const list = oneByClass(env.root(), 'display__teams');
+    assert.strictEqual(list.style.gridTemplateRows, 'repeat(' + want.rows + ', auto)',
+      want.teams + ' teams -> ' + want.rows + ' rows, got ' + list.style.gridTemplateRows);
+
+    const box = oneByClass(env.root(), 'display__teams-box');
+    assert.strictEqual(box.dataset.columns, String(want.cols),
+      want.teams + ' teams -> ' + want.cols + ' column(s)');
+    assert.strictEqual(box.dataset.density, want.density,
+      want.teams + ' teams -> ' + want.density + ' density');
+
+    // Rows x columns must actually hold every team, or some fall off the grid.
+    assert.ok(want.rows * want.cols >= want.teams,
+      want.rows + ' x ' + want.cols + ' cannot hold ' + want.teams);
+  }
+});
+
 test('standings strip: purse remaining and players count / max', async () => {
   const env = boot({ handler: () => ({ data: clone(SNAP_V2) }) });
   env.page.render(env.ctx());

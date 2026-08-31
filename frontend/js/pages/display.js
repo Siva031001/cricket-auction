@@ -713,6 +713,33 @@ const DisplayPage = {
     }
     state.el.bottom.hidden = false;
 
+    // SHAPE THE TABLE TO THE NUMBER OF TEAMS.
+    //
+    // This was a fixed "six rows, then a new column", which is fine at 6 and 12
+    // and wrong at 20: four columns will not fit across a 1024px projector
+    // beside the tallies.
+    //
+    // Instead, bound the COLUMNS and let the rows grow. Ten rows is about the
+    // most that fits the bottom third of a 768px screen at a legible size, so:
+    //
+    //    6 teams -> 1 column of 6      20 teams -> 2 columns of 10
+    //   12 teams -> 2 columns of 6     30 teams -> 3 columns of 10
+    //
+    // Height is the cheaper axis here — the block is bottom-aligned and the
+    // stage above it is what needs the room, not the strip.
+    const perColumn = 10;
+    const cols = Math.max(1, Math.ceil(rows.length / perColumn));
+    const rowCount = Math.ceil(rows.length / cols);
+    list.style.gridTemplateRows = 'repeat(' + rowCount + ', auto)';
+
+    // Drives the type scale. Past a dozen teams the rows have to give up some
+    // size to stay inside the strip; CSS decides how much.
+    if (state.el.teamsBox) {
+      state.el.teamsBox.dataset.density =
+        rows.length > 18 ? 'tight' : (rows.length > 10 ? 'compact' : 'normal');
+      state.el.teamsBox.dataset.columns = String(cols);
+    }
+
     rows.forEach(function (team) {
       const li = DisplayPage._el('li', 'display__team-cell');
 
@@ -1093,6 +1120,7 @@ const DisplayPage = {
     teams.setAttribute('aria-label', 'Team standings');
     teamsBox.appendChild(teams);
 
+
     const summary = DisplayPage._el('div', 'display__summary');
     summary.hidden = true;
 
@@ -1135,6 +1163,7 @@ const DisplayPage = {
       messageBody: messageBody,
       bottom: bottom,
       teams: teams,
+      teamsBox: teamsBox,
       summary: summary,
       hint: hint
     };

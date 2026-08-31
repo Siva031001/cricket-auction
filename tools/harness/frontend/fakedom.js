@@ -48,6 +48,12 @@ class Element {
     this.id = '';
     this.classList = new ClassList(this);
     this.dataset = {};
+    // Real elements always have one. Without it, any page setting an inline
+    // style throws a TypeError inside its render and every assertion that
+    // depends on the paint fails for an unrelated reason — which is exactly
+    // what happened when the projector started sizing its team grid from the
+    // team count.
+    this.style = {};
     this.offsetWidth = 0;
     this._listeners = {};
   }
