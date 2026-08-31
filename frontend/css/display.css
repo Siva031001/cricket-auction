@@ -625,8 +625,11 @@ body[data-route="display"] .display__card {
   grid-template-columns: minmax(0, 48fr) minmax(0, 52fr);
   gap: clamp(16px, 2.5vw, 56px);
   align-items: stretch;
-  /* Nothing may escape the card into the standings strip below it. */
-  overflow: hidden;
+  /* Sideways only. A blanket overflow:hidden also clips vertically, which on a
+     short screen removed the name and the sold amount rather than the stray
+     pixels it was aimed at. */
+  overflow-x: hidden;
+  min-height: 0;
 }
 
 body[data-route="display"] .display__photo {
@@ -672,11 +675,21 @@ body[data-route="display"] .display__details {
 }
 
 /* The name yields before anything else: it is the only element here that can
-   afford to. The result row (status, amount, team) must never be squeezed out. */
+   afford to. The result row (status, amount, team) must never be squeezed out.
+   
+   NOT overflow:hidden. That was here to stop the sold amount being pushed out
+   of the card, and on a smaller screen than the one it was written on it did
+   something far worse — it clipped the PLAYER'S NAME to nothing, which is the
+   single most important thing on the projector. It yields by shrinking and, at
+   the very worst, by clamping to three lines with an ellipsis. Never to zero. */
 body[data-route="display"] .display-name {
   flex: 0 1 auto;
   min-height: 0;
-  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: clip;
 }
 
 body[data-route="display"] .display__result {
@@ -706,9 +719,12 @@ body[data-route="display"] .display__team {
 /* ---- 3. Name: fits, and only breaks between words ------------------- */
 
 body[data-route="display"] .display-name {
-  /* Ceiling lowered from 140px. A long single name (KAVIYARASAN) at 140px on a
-     52% column has nowhere to go but a mid-word break. */
-  font-size: clamp(34px, 4.6vw, 96px);
+  /* Sized by the SMALLER of width and height. 4.6vw alone assumes the screen is
+     as tall as it is wide; on a 1024x768 projector, or a laptop with browser
+     chrome, the name stayed huge, ran out of vertical room, and had to be
+     clipped. min() lets a short screen shrink the type instead.
+     Floor lowered to 22px so there is real room to shrink into. */
+  font-size: clamp(22px, min(4.6vw, 8vh), 96px);
   line-height: 1.02;
   letter-spacing: -0.015em;
   /* Break between words by preference; only split a word that genuinely

@@ -580,6 +580,34 @@ test('auction closed: the final summary replaces the player card', async () => {
  * 9. Standings, summary, pre-warming, keyboard
  * ---------------------------------------------------------------------- */
 
+test('the player name can never be clipped out of existence', async () => {
+  // Reported from a second machine: the name was invisible there while fine on
+  // the machine it was built on. Cause was a CSS rule, not data — the name had
+  // overflow:hidden inside a card that also clipped vertically, so a shorter
+  // screen removed the most important text on the projector.
+  const css = fs.readFileSync(CSS_PATH, 'utf8');
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // Find every .display-name block and check none of them hard-clips.
+  const blocks = [...rules.matchAll(/\.display-name\s*\{([^}]*)\}/g)].map((m) => m[1]);
+  assert.ok(blocks.length > 0, 'the name is styled somewhere');
+  blocks.forEach(function (body) {
+    assert.ok(!/overflow\s*:\s*hidden/.test(body),
+      'overflow:hidden on .display-name can remove the name entirely: ' + body.trim());
+  });
+
+  // And it must be able to shrink: a width-only font size keeps the name huge
+  // on a short screen, which is what forced the clipping.
+  const sized = blocks.join(' ');
+  assert.ok(/font-size:\s*clamp\([^)]*vh/.test(sized) || /min\([^)]*vh/.test(sized),
+    'the name size must respond to viewport HEIGHT, not width alone: ' + sized);
+
+  // The card must not clip vertically either.
+  const card = [...rules.matchAll(/\.display__card\s*\{([^}]*)\}/g)].map((m) => m[1]).join(' ');
+  assert.ok(!/overflow\s*:\s*hidden/.test(card),
+    'a blanket overflow:hidden on the card clips the name and the sold amount');
+});
+
 test('standings scale from 6 teams to 20 without a fixed row count', async () => {
   // The row/column shape used to be hardcoded at "six rows, then a new column".
   // Fine at 6 and 12; at 20 that is four columns, which will not fit across a
